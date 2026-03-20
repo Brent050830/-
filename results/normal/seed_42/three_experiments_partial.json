@@ -1,0 +1,74 @@
+{
+  "experiment_1_zero_delta_replay": {
+    "eval_metrics": {
+      "saving_total_pct": 0.2875654008209362,
+      "saving_epd_pct": 0.28756539172297174,
+      "saving_net_epd_pct": 0.28756539172297174,
+      "saving_isochronous_pct": 0.2862051099327279,
+      "saving_net_isochronous_pct": 0.2862051099327279,
+      "saving_cmp_total_pct": 0.9673294147935669,
+      "speed_energy_bias_pct": -0.6797640139726308,
+      "low_speed_benefit_pct": 0.0,
+      "speed_mae": 0.11490480157625407,
+      "dist_mae": 0.0,
+      "speed_rel_bias_pct": -0.35003298779485487,
+      "dist_rel_bias_pct": 0.0,
+      "front_half_saving_pct": 0.37553959022430233,
+      "back_half_saving_pct": 0.1108475442701347,
+      "front_back_saving_gap_pct": 0.2646920459541676,
+      "worst_window_saving_pct": -8.102396975891146,
+      "negative_window_ratio": 0.5737373737373738,
+      "worst_window_reward_saving_pct": -8.214506774970069,
+      "negative_window_reward_ratio": 0.3888888888888889,
+      "worst_segment_speed_mae": 0.3631726613477467,
+      "worst_segment_dist_mae": 0.0,
+      "tracking_ok": true,
+      "smooth_ok": true,
+      "bias_guard_ok": true
+    }
+  },
+  "experiment_3_split_current_model": {
+    "eval_metrics": {
+      "saving_total_pct": -1.3197547902036662,
+      "saving_epd_pct": -1.31975474844946,
+      "saving_net_epd_pct": -1.31975474844946,
+      "saving_isochronous_pct": -1.3197773166712377,
+      "saving_net_isochronous_pct": -1.3197773166712377,
+      "saving_cmp_total_pct": -12.679257111235021,
+      "speed_energy_bias_pct": 11.359502321031355,
+      "low_speed_benefit_pct": 0.0,
+      "speed_mae": 0.05869649354674224,
+      "dist_mae": 0.0,
+      "speed_rel_bias_pct": 0.11426749607799268,
+      "dist_rel_bias_pct": 0.0,
+      "front_half_saving_pct": -1.3415396737976502,
+      "back_half_saving_pct": -1.275994478565459,
+      "front_back_saving_gap_pct": 0.06554519523219127,
+      "worst_window_saving_pct": -22.399214790930095,
+      "negative_window_ratio": 0.503030303030303,
+      "worst_window_reward_saving_pct": -156.48991537250146,
+      "negative_window_reward_ratio": 0.5212121212121212,
+      "worst_segment_speed_mae": 0.14647478677256756,
+      "worst_segment_dist_mae": 0.0,
+      "tracking_ok": true,
+      "smooth_ok": true,
+      "bias_guard_ok": true
+    },
+    "split": {
+      "traction": {
+        "steps": 999,
+        "step_ratio": 1.0,
+        "saving_total_pct": -1.3197547902038278,
+        "saving_cmp_total_pct": -13.346560167690576,
+        "mean_abs_residual_torque": 3.9229180171635485
+      },
+      "regen": {
+        "steps": 0,
+        "step_ratio": 0.0,
+        "saving_total_pct": 0.0,
+        "saving_cmp_total_pct": 0.0,
+        "mean_abs_residual_torque": 0.0
+      }
+    }
+  }
+}
