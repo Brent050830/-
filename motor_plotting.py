@@ -59,6 +59,19 @@ def _moving_average(arr: np.ndarray, window: int) -> np.ndarray:
     return np.convolve(arr, kernel, mode="same")
 
 
+def _safe_saving_pct(ref_energy: np.ndarray, agent_energy: np.ndarray, eps: float = 1e-3) -> np.ndarray:
+    """稳健地计算逐步节能率，参考能耗过小时置为 NaN，避免图像被极端值拉坏。"""
+    n = min(len(ref_energy), len(agent_energy))
+    out = np.full(n, np.nan, dtype=float)
+    if n == 0:
+        return out
+    ref_arr = np.asarray(ref_energy[:n], dtype=float)
+    agent_arr = np.asarray(agent_energy[:n], dtype=float)
+    valid = np.abs(ref_arr) > eps
+    out[valid] = (ref_arr[valid] - agent_arr[valid]) / (np.abs(ref_arr[valid]) + eps) * 100.0
+    return out
+
+
 # ============================================================
 #  图 1：跟踪与能耗总图
 # ============================================================
@@ -298,7 +311,8 @@ def plot_saving_trace(infos: List[dict], ref: dict, style: str, save_dir: str):
     steps = np.arange(len(agent_energy))
 
     # 逐步节能率
-    rho = (ref_energy - agent_energy) / (np.abs(ref_energy) + 1e-8) * 100
+    rho = _safe_saving_pct(ref_energy, agent_energy)
+    rho_ma = _moving_average(np.nan_to_num(rho, nan=0.0), 25)
     # 累积节能率
     cum_ref   = np.cumsum(ref_energy)
     cum_agent = np.cumsum(agent_energy)
@@ -307,10 +321,17 @@ def plot_saving_trace(infos: List[dict], ref: dict, style: str, save_dir: str):
     fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
 
     ax = axes[0]
-    ax.plot(steps, rho, color='teal', alpha=0.6, linewidth=0.8, label='逐步节能率 ρ_k (%)')
+    valid = np.isfinite(rho)
+    ax.plot(steps[valid], rho[valid], color='teal', alpha=0.20, linewidth=0.8, label='逐步节能率 ρ_k (%)')
+    ax.plot(steps, rho_ma, color='darkblue', linewidth=1.5, label='逐步节能率移动平均 (25-step)')
     ax.axhline(0, color='k', linewidth=0.8)
-    ax.fill_between(steps, 0, rho, where=rho >= 0, color='green', alpha=0.15)
-    ax.fill_between(steps, 0, rho, where=rho < 0, color='red', alpha=0.15)
+    ax.fill_between(steps[valid], 0, rho[valid], where=rho[valid] >= 0, color='green', alpha=0.12)
+    ax.fill_between(steps[valid], 0, rho[valid], where=rho[valid] < 0, color='red', alpha=0.12)
+    if np.any(valid):
+        lo = float(np.percentile(rho[valid], 2))
+        hi = float(np.percentile(rho[valid], 98))
+        pad = max((hi - lo) * 0.15, 5.0)
+        ax.set_ylim(lo - pad, hi + pad)
     ax.set_ylabel("节能率 (%)")
     ax.set_title(f"[{style.upper()}] Saving Trace")
     ax.legend()

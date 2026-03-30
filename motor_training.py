@@ -17,6 +17,25 @@ from typing import Dict, List, Optional, Tuple
 from motor_env import MotorEnv, generate_road, generate_reference_trajectory, load_efficiency_map, STYLE_PROFILES
 from motor_agent import PPOAgent
 
+
+def score_energy_metrics_for_selection(metrics: dict) -> float:
+    """
+    选择 energy/checkpoint 时使用的统一评分：
+    先保证可用性，再尽量最大化真实节能，同时兼顾控制口径节能。
+    """
+    total_saving = float(metrics.get("saving_total_pct", -999.0))
+    cmp_saving = float(metrics.get("saving_cmp_total_pct", -999.0))
+    score = total_saving
+    score += 0.20 * cmp_saving
+
+    if not metrics.get("tracking_ok", False):
+        score -= 100.0
+    if not metrics.get("bias_guard_ok", False):
+        score -= 50.0
+    if not metrics.get("smooth_ok", True):
+        score -= 20.0
+    return score
+
 # ============================================================
 #  拉格朗日乘子管理器
 # ============================================================
@@ -283,12 +302,7 @@ def train_stage(agent: PPOAgent,
 
             # 保存 best
             if mode == "energy":
-                cmp_saving = eval_metrics.get("saving_cmp_total_pct", -999.0)
-                saving_val = -abs(cmp_saving) + 0.05 * cmp_saving
-                if not eval_metrics.get("tracking_ok", False):
-                    saving_val -= 50.0
-                if not eval_metrics.get("bias_guard_ok", False):
-                    saving_val -= 20.0
+                saving_val = score_energy_metrics_for_selection(eval_metrics)
             else:
                 saving_val = -eval_metrics.get("speed_mae", 999.0)
             if saving_val > history["best_eval_saving"]:

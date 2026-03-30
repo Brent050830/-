@@ -45,11 +45,17 @@ GRAVITY = 9.81
 GEAR_RATIO = 9.0
 MOTOR_MAX_TORQUE = 320.0
 MOTOR_MAX_SPEED = 13000.0
+MOTOR_BASE_SPEED = 4000.0
+MOTOR_MAX_POWER_W = MOTOR_MAX_TORQUE * MOTOR_BASE_SPEED * 2.0 * math.pi / 60.0
+MOTOR_MAX_REGEN_TORQUE = MOTOR_MAX_TORQUE * 0.5
+MOTOR_MAX_REGEN_POWER_W = MOTOR_MAX_POWER_W * 0.5
+DRIVELINE_EFFICIENCY = 0.95
 BATTERY_CAPACITY_WH = 60000.0
 DELTA_M = 1.05
 DT_DEFAULT = 0.1
 DS_DEFAULT = 1.0
 ENERGY_NORM_EPS = 1e-3
+P_AUX_DEFAULT_W = 0.0
 
 
 STYLE_PROFILES = {
@@ -128,11 +134,72 @@ def query_efficiency(eff_map: dict, torque: float, speed_rpm: float) -> float: #
     return float(np.clip(eta, 0.01, 0.99))
 
 
+def vehicle_speed_to_motor_speed_rpm(vehicle_speed_mps: float) -> float:
+    wheel_omega_radps = vehicle_speed_mps / WHEEL_RADIUS
+    motor_omega_radps = wheel_omega_radps * GEAR_RATIO
+    return motor_omega_radps * 60.0 / (2.0 * math.pi)
+
+
+def power_limited_torque(max_power_w: float, motor_speed_rpm: float) -> float:
+    if motor_speed_rpm <= 1e-6:
+        return float("inf")
+
+    motor_omega_radps = motor_speed_rpm * 2.0 * math.pi / 60.0
+    return max_power_w / motor_omega_radps
+
+
+def limit_motor_torque(motor_torque_cmd: float, motor_speed_rpm: float) -> float:
+    drive_torque_limit = MOTOR_MAX_TORQUE
+    regen_torque_limit = MOTOR_MAX_REGEN_TORQUE
+
+    if motor_speed_rpm > MOTOR_BASE_SPEED:
+        drive_torque_limit = min(
+            drive_torque_limit,
+            power_limited_torque(MOTOR_MAX_POWER_W, motor_speed_rpm),
+        )
+        regen_torque_limit = min(
+            regen_torque_limit,
+            power_limited_torque(MOTOR_MAX_REGEN_POWER_W, motor_speed_rpm),
+        )
+
+    return float(np.clip(motor_torque_cmd, -regen_torque_limit, drive_torque_limit))
+
+
+def driveline_efficiency_for_torque(motor_torque: float) -> float:
+    if motor_torque >= 0.0:
+        return DRIVELINE_EFFICIENCY
+    return 1.0 / max(DRIVELINE_EFFICIENCY, 1e-6)
+
+
+def calc_battery_power_w(
+    motor_torque: float,
+    motor_rpm: float,
+    eta: float,
+    p_aux_w: float = P_AUX_DEFAULT_W,
+) -> float:
+    p_motor = motor_torque * motor_rpm * 2.0 * math.pi / 60.0
+    eta_clip = max(eta, 0.1)
+    if p_motor >= 0.0:
+        return p_motor / eta_clip + p_aux_w
+    return p_motor * eta_clip + p_aux_w
+
+
+def update_soc(
+    soc: float,
+    battery_power_w: float,
+    dt: float,
+    capacity_wh: float = BATTERY_CAPACITY_WH,
+    soc_min: float = 0.0,
+    soc_max: float = 1.0,
+) -> float:
+    energy_wh = battery_power_w * dt / 3600.0
+    delta_soc = energy_wh / max(capacity_wh, 1e-8)
+    next_soc = soc - delta_soc
+    return float(np.clip(next_soc, soc_min, soc_max))
+
+
 def compute_battery_power(motor_torque: float, motor_rpm: float, eta: float) -> float: # 计算电池功率，根据电机扭矩、转速和效率
-    p_motor = motor_torque * motor_rpm * 2 * math.pi / 60.0
-    if p_motor >= 0:
-        return p_motor / max(eta, 0.1)
-    return p_motor * eta
+    return calc_battery_power_w(motor_torque, motor_rpm, eta, p_aux_w=0.0)
 
 
 def compute_loss_energy( # 计算损失能量，基于当前速度、加速度、坡度、效率和距离增量，适用于评估实际跟踪情况下的能量消耗，包括慢速损失
@@ -154,6 +221,71 @@ def compute_loss_energy( # 计算损失能量，基于当前速度、加速度�
     else:
         loss_coeff = max(0.0, 1.0 - eta_clip)
     return abs(wheel_force) * loss_coeff * ds / 3600.0 # 损失能量 = 受力 * 损失系数 * 距离增量，单位为Wh（也就是单位距离的能量损失）
+
+
+def step_longitudinal_dynamics(
+    speed_prev: float,
+    motor_torque_cmd: float,
+    grade: float,
+    ds: float,
+    eff_map: Optional[dict],
+    soc_prev: float,
+    p_aux_w: float = P_AUX_DEFAULT_W,
+) -> dict:
+    motor_speed_now_rpm = vehicle_speed_to_motor_speed_rpm(speed_prev)
+    f_roll = VEHICLE_MASS * GRAVITY * ROLL_RESIST * math.cos(grade)
+    f_grade = VEHICLE_MASS * GRAVITY * math.sin(grade)
+    f_air = 0.5 * AIR_DENSITY * DRAG_COEFF * FRONTAL_AREA * speed_prev ** 2
+
+    # 先用起点转速做一次粗限幅，预测区间均速，再用均速做最终恒功率限幅。
+    motor_torque_pre = limit_motor_torque(motor_torque_cmd, motor_speed_now_rpm)
+    driveline_eff_pre = driveline_efficiency_for_torque(motor_torque_pre)
+    f_drive_pre = motor_torque_pre * GEAR_RATIO * driveline_eff_pre / WHEEL_RADIUS
+    f_net_pre = f_drive_pre - f_roll - f_grade - f_air
+    accel_pre = f_net_pre / (DELTA_M * VEHICLE_MASS)
+    v_guess_sq = max(speed_prev ** 2 + 2.0 * accel_pre * ds, 0.25)
+    v_guess = math.sqrt(v_guess_sq)
+    v_avg_guess = max(0.5 * (speed_prev + v_guess), 0.5)
+
+    motor_speed_limit_rpm = vehicle_speed_to_motor_speed_rpm(v_avg_guess)
+    motor_torque = limit_motor_torque(motor_torque_cmd, motor_speed_limit_rpm)
+    driveline_eff = driveline_efficiency_for_torque(motor_torque)
+    f_drive = motor_torque * GEAR_RATIO * driveline_eff / WHEEL_RADIUS
+    f_net = f_drive - f_roll - f_grade - f_air
+
+    accel = f_net / (DELTA_M * VEHICLE_MASS)
+    v_new_sq = max(speed_prev ** 2 + 2.0 * accel * ds, 0.25)
+    v_new = math.sqrt(v_new_sq)
+    v_avg = max(0.5 * (speed_prev + v_new), 0.5)
+    dt_k = ds / v_avg
+
+    motor_speed_avg_rpm = vehicle_speed_to_motor_speed_rpm(v_avg)
+    motor_speed_next_rpm = vehicle_speed_to_motor_speed_rpm(v_new)
+    eta = query_efficiency(eff_map, motor_torque, motor_speed_avg_rpm) if eff_map is not None else 0.85
+    p_bat = calc_battery_power_w(motor_torque, motor_speed_avg_rpm, eta, p_aux_w=p_aux_w)
+    energy_step = p_bat * dt_k / 3600.0
+    soc_next = update_soc(soc_prev, p_bat, dt_k)
+    cmp_energy_step = compute_loss_energy(v_avg, accel, grade, eta, ds)
+
+    return {
+        "motor_torque": motor_torque,
+        "motor_speed_rpm": motor_speed_next_rpm,
+        "motor_speed_avg_rpm": motor_speed_avg_rpm,
+        "eta": eta,
+        "battery_power_w": p_bat,
+        "energy_step": energy_step,
+        "cmp_energy_step": cmp_energy_step,
+        "soc_next": soc_next,
+        "speed_next": v_new,
+        "speed_avg": v_avg,
+        "dt": dt_k,
+        "accel": accel,
+        "f_roll": f_roll,
+        "f_grade": f_grade,
+        "f_air": f_air,
+        "f_drive": f_drive,
+        "f_net": f_net,
+    }
 
 
 def compute_saving_ratio( # 计算节省率，基于参考能量密度和实际能量密度，使用归一化差值方法，避免除零错误，当参考能量密度非常小时返回0
@@ -226,36 +358,37 @@ def generate_reference_trajectory( # 生成参考轨迹，基于路况信息和�
 
     ref_speed[0] = road["speed_limit"][0] * sp["speed_scale"] * 0.8
     accel_lim = sp["accel_limit"]
+    ref_soc = 1.0
 
     for k in range(1, n):
         target_v = road["speed_limit"][k] * sp["speed_scale"]
         v_prev = ref_speed[k - 1]
-        accel = np.clip(0.5 * (target_v - v_prev), -accel_lim, accel_lim)
-        v_new_sq = max(v_prev ** 2 + 2.0 * accel * ds, 0.25)
-        v_new = math.sqrt(v_new_sq)
-        ref_speed[k] = v_new
-        ref_accel[k] = accel
-
-        v_avg = max(0.5 * (v_prev + v_new), 0.5)
-        dt_k = ds / max(v_avg, 0.5)
-        ref_time[k] = ref_time[k - 1] + dt_k
-
+        accel_desired = np.clip(0.5 * (target_v - v_prev), -accel_lim, accel_lim)
         grade_k = road["grade"][k]
         f_roll = VEHICLE_MASS * GRAVITY * ROLL_RESIST * math.cos(grade_k)
         f_grade = VEHICLE_MASS * GRAVITY * math.sin(grade_k)
-        f_air = 0.5 * AIR_DENSITY * DRAG_COEFF * FRONTAL_AREA * v_new ** 2
-        f_accel = DELTA_M * VEHICLE_MASS * accel
+        f_air = 0.5 * AIR_DENSITY * DRAG_COEFF * FRONTAL_AREA * v_prev ** 2
+        f_accel = DELTA_M * VEHICLE_MASS * accel_desired
         f_total = f_roll + f_grade + f_air + f_accel
+        motor_torque_cmd = f_total * WHEEL_RADIUS / (GEAR_RATIO * DRIVELINE_EFFICIENCY)
 
-        motor_torque = np.clip(f_total * WHEEL_RADIUS / GEAR_RATIO, -MOTOR_MAX_TORQUE, MOTOR_MAX_TORQUE)
-        ref_torque[k] = motor_torque
+        dyn = step_longitudinal_dynamics(
+            speed_prev=v_prev,
+            motor_torque_cmd=motor_torque_cmd,
+            grade=grade_k,
+            ds=ds,
+            eff_map=eff_map,
+            soc_prev=ref_soc,
+            p_aux_w=P_AUX_DEFAULT_W,
+        )
 
-        motor_rpm = v_new / WHEEL_RADIUS * GEAR_RATIO * 60.0 / (2 * math.pi)
-        eta = query_efficiency(eff_map, motor_torque, motor_rpm) if eff_map is not None else 0.85
-        p_bat = compute_battery_power(motor_torque, motor_rpm, eta)
-
-        ref_energy[k] = p_bat * dt_k / 3600.0
-        ref_cmp_energy[k] = compute_loss_energy(v_new, accel, grade_k, eta, ds)
+        ref_speed[k] = dyn["speed_next"]
+        ref_accel[k] = dyn["accel"]
+        ref_time[k] = ref_time[k - 1] + dyn["dt"]
+        ref_torque[k] = dyn["motor_torque"]
+        ref_energy[k] = dyn["energy_step"]
+        ref_cmp_energy[k] = dyn["cmp_energy_step"]
+        ref_soc = dyn["soc_next"]
 
     ref_dist = np.arange(n) * ds
 
@@ -363,28 +496,34 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
 
         ref_v = self.ref["ref_speed"][k]
         ref_torque = self.ref["ref_torque"][k]
-        motor_torque = ref_torque + residual_torque
-        motor_torque = np.clip(motor_torque, -MOTOR_MAX_TORQUE, MOTOR_MAX_TORQUE)
-        motor_torque = (1.0 - self.torque_blend) * self.prev_torque + self.torque_blend * motor_torque
+        motor_torque_cmd = ref_torque + residual_torque
+        motor_torque_cmd = (1.0 - self.torque_blend) * self.prev_torque + self.torque_blend * motor_torque_cmd
 
         grade_k = self.road["grade"][k]
-        f_roll = VEHICLE_MASS * GRAVITY * ROLL_RESIST * math.cos(grade_k)
-        f_grade = VEHICLE_MASS * GRAVITY * math.sin(grade_k)
-        f_air = 0.5 * AIR_DENSITY * DRAG_COEFF * FRONTAL_AREA * self.v ** 2
-        f_motor = motor_torque * GEAR_RATIO / WHEEL_RADIUS
-        f_net = f_motor - f_roll - f_grade - f_air
-
-        accel = f_net / (DELTA_M * VEHICLE_MASS)
-        v_new_sq = max(self.v ** 2 + 2.0 * accel * self.ds, 0.25)
-        v_new = math.sqrt(v_new_sq)
-        v_avg = max(0.5 * (self.v + v_new), 0.5)
-        dt_k = self.ds / v_avg
-
-        motor_rpm = v_new / WHEEL_RADIUS * GEAR_RATIO * 60.0 / (2 * math.pi)
-        eta = query_efficiency(self.eff_map, motor_torque, motor_rpm) if self.eff_map is not None else 0.85
-        p_bat = compute_battery_power(motor_torque, motor_rpm, eta)
-        energy_step = p_bat * dt_k / 3600.0
-        cmp_energy_step = compute_loss_energy(v_new, accel, grade_k, eta, self.ds)
+        dyn = step_longitudinal_dynamics(
+            speed_prev=self.v,
+            motor_torque_cmd=motor_torque_cmd,
+            grade=grade_k,
+            ds=self.ds,
+            eff_map=self.eff_map,
+            soc_prev=self.soc,
+            p_aux_w=P_AUX_DEFAULT_W,
+        )
+        motor_torque = dyn["motor_torque"]
+        f_roll = dyn["f_roll"]
+        f_grade = dyn["f_grade"]
+        f_air = dyn["f_air"]
+        f_motor = dyn["f_drive"]
+        f_net = dyn["f_net"]
+        accel = dyn["accel"]
+        v_new = dyn["speed_next"]
+        v_avg = dyn["speed_avg"]
+        dt_k = dyn["dt"]
+        motor_rpm = dyn["motor_speed_rpm"]
+        eta = dyn["eta"]
+        p_bat = dyn["battery_power_w"]
+        energy_step = dyn["energy_step"]
+        cmp_energy_step = dyn["cmp_energy_step"]
 
         ref_energy_k = self.ref["ref_energy_per_ds"][k]
         ref_cmp_energy_k = self.ref["ref_cmp_energy_per_ds"][k]
@@ -393,7 +532,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         self.total_cmp_energy_agent += cmp_energy_step
         self.total_time_agent += dt_k
         self.agent_dist += v_avg * dt_k
-        self.soc = np.clip(self.soc - energy_step / BATTERY_CAPACITY_WH, 0.0, 1.0)
+        self.soc = dyn["soc_next"]
 
         self.energy_history.append(energy_step)
         self.cmp_energy_history.append(cmp_energy_step)
@@ -543,35 +682,30 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             return float(reward), info
 
         tracking_ok = speed_err <= self.speed_tol and dist_err <= self.dist_tol and accel_err <= self.accel_tol
-        if not tracking_ok: # 如果当前状态未满足跟踪要求，直接基于跟踪误差计算奖励，并返回详细的惩罚信息，鼓励模型优先达到基本的跟踪性能，再考虑能量优化
-            reward = -track_penalty
-            info = { # 优化模式下的奖励信息字典，包含跟踪状态、跟踪惩罚、各项误差的惩罚等详细数据，供训练过程中的分析和调试使用
-                "tracking_ok_step": 0.0,
-                "track_penalty": -track_penalty,
-                "speed_penalty": -8.0 * (speed_err / self.speed_tol) ** 2,
-                "dist_penalty": -4.0 * (dist_err / self.dist_tol) ** 2,
-                "accel_penalty": -2.0 * (accel_err / self.accel_tol) ** 2,
-                "loss_delta": 0.0,
-                "torque_delta_penalty": 0.0,
-            }
-            return float(reward), info
-
         w_c = self.energy_weight * self.sp["energy_scale"]
         w_u = 0.08
         ref_loss_density = ref_cmp_energy_k / max(self.ds, 1e-8)
         agent_loss_density = accounted_energy / max(self.ds, 1e-8)
         loss_delta = agent_loss_density - ref_loss_density
         torque_delta_penalty = w_u * (torque_diff / max(self.residual_torque_scale, 1e-8)) ** 2
-        reward = -w_c * loss_delta - torque_delta_penalty
+        r_energy = -w_c * loss_delta - torque_delta_penalty
+        beta = 0.15
+        g_track = math.exp(-beta * track_penalty)
+        reward = -track_penalty + g_track * r_energy
 
         info = { # 优化模式下的奖励信息字典，包含跟踪状态、跟踪惩罚、各项误差的惩罚等详细数据，供训练过程中的分析和调试使用
-            "tracking_ok_step": 1.0,
+            "tracking_ok_step": 1.0 if tracking_ok else 0.0,
             "track_penalty": -track_penalty,
+            "speed_penalty": -8.0 * (speed_err / self.speed_tol) ** 2,
+            "dist_penalty": -4.0 * (dist_err / self.dist_tol) ** 2,
+            "accel_penalty": -2.0 * (accel_err / self.accel_tol) ** 2,
             "loss_delta": loss_delta,
             "ref_loss_density": ref_loss_density,
             "agent_loss_density": agent_loss_density,
             "torque_delta_penalty": -torque_delta_penalty,
             "agent_eta": eta,
+            "g_track": g_track,
+            "r_energy_raw": r_energy,
         }
         return float(reward), info
 

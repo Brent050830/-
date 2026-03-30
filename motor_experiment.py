@@ -17,7 +17,8 @@ from motor_env import (MotorEnv, generate_road, generate_reference_trajectory,
                        load_efficiency_map, STYLE_PROFILES)
 from motor_agent import PPOAgent
 from motor_training import (run_multistage_training, eval_episode,
-                            load_best_checkpoint, LagrangianManager)
+                            load_best_checkpoint, LagrangianManager,
+                            score_energy_metrics_for_selection)
 from motor_plotting import plot_all
 
 # ============================================================
@@ -315,14 +316,9 @@ def run_multi_seed_experiment(style: str,
 
     # 选择 best seed：以控制节能为主，同时要求基本可用的跟踪
     def score_fn(r):
-        e_saving = r["eval_metrics"].get("saving_cmp_total_pct", -999)
-        s_saving = r["stress_metrics"].get("saving_cmp_total_pct", -999)
-        score = (-abs(e_saving) + 0.05 * e_saving) * 0.7 + (-abs(s_saving) + 0.05 * s_saving) * 0.3
-        if not r["eval_metrics"].get("tracking_ok", False):
-            score -= 50.0
-        if not r["eval_metrics"].get("bias_guard_ok", False):
-            score -= 20.0
-        return score
+        eval_score = score_energy_metrics_for_selection(r["eval_metrics"])
+        stress_score = score_energy_metrics_for_selection(r["stress_metrics"])
+        return 0.7 * eval_score + 0.3 * stress_score
 
     best_result = max(results, key=score_fn)
     best_seed = best_result["seed"]
