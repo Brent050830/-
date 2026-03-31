@@ -779,6 +779,10 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         ref_t_norm = self.ref["ref_torque"][k] / MOTOR_MAX_TORQUE
         ref_loss_norm = self.ref["ref_cmp_energy_per_ds"][k] / self.ref_loss_scale
 
+        ref_time_k = self.ref.get("ref_time", np.zeros(self.n))[k]
+        time_err_s = self.total_time_agent - ref_time_k
+        time_err_norm = time_err_s / 5.0  # 归一化：落后5秒记为1.0
+
         speed_err_norm = (self.v - ref_v) / self.speed_tol
         dist_err_norm = dist_err_m / self.dist_tol
         prev_loss_delta_norm = self.prev_loss_delta / self.ref_loss_scale
@@ -805,6 +809,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
                 ref_d_norm,
                 ref_t_norm,
                 ref_loss_norm,
+                time_err_norm,
                 speed_err_norm,
                 dist_err_norm,
                 prev_loss_delta_norm,
