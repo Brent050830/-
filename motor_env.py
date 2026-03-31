@@ -56,6 +56,8 @@ DT_DEFAULT = 0.1
 DS_DEFAULT = 1.0
 ENERGY_NORM_EPS = 1e-3
 P_AUX_DEFAULT_W = 0.0
+TORQUE_BLEND_DEFAULT = 0.28
+REFERENCE_TORQUE_BLEND = TORQUE_BLEND_DEFAULT
 
 
 STYLE_PROFILES = {
@@ -370,7 +372,12 @@ def generate_reference_trajectory( # 生成参考轨迹，基于路况信息和�
         f_air = 0.5 * AIR_DENSITY * DRAG_COEFF * FRONTAL_AREA * v_prev ** 2
         f_accel = DELTA_M * VEHICLE_MASS * accel_desired
         f_total = f_roll + f_grade + f_air + f_accel
-        motor_torque_cmd = f_total * WHEEL_RADIUS / (GEAR_RATIO * DRIVELINE_EFFICIENCY)
+        motor_torque_cmd_raw = f_total * WHEEL_RADIUS / (GEAR_RATIO * DRIVELINE_EFFICIENCY)
+        # 参考驾驶员也做扭矩平滑，避免起步/前段出现不合理的突跳。
+        motor_torque_cmd = (
+            (1.0 - REFERENCE_TORQUE_BLEND) * ref_torque[k - 1]
+            + REFERENCE_TORQUE_BLEND * motor_torque_cmd_raw
+        )
 
         dyn = step_longitudinal_dynamics(
             speed_prev=v_prev,
@@ -436,6 +443,10 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
 
         self.n = road["n"]
         self.ds = road["ds"]
+        self.ref_loss_scale = max(
+            float(np.mean(np.abs(self.ref.get("ref_cmp_energy_per_ds", np.zeros(self.n))))),
+            ENERGY_NORM_EPS,
+        )
 
         self.residual_torque_scale = residual_torque_scale
         self.speed_tol = self.sp["speed_tol_ms"]
@@ -443,7 +454,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         self.accel_tol = self.sp["accel_tol_ms2"]
         self.smooth_tol = 8.0
         self.window_energy_tol = 0.3
-        self.torque_blend = 0.20
+        self.torque_blend = TORQUE_BLEND_DEFAULT
 
         self.k = 0
         self.v = 0.0
@@ -462,6 +473,8 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         self.action_history: List[np.ndarray] = []
         self.time_history: List[float] = []
         self.cost_history = {name: [] for name in self.CONSTRAINT_NAMES}
+        self.prev_loss_delta = 0.0
+        self.prev_window_cmp_gap = 0.0
 
         self._compute_obs_dim()
 
@@ -486,6 +499,8 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         self.action_history = []
         self.time_history = [0.0]
         self.cost_history = {name: [] for name in self.CONSTRAINT_NAMES}
+        self.prev_loss_delta = 0.0
+        self.prev_window_cmp_gap = 0.0
         return self._build_obs()
 
     def step(self, action_raw: np.ndarray) -> Tuple[np.ndarray, float, bool, dict]: # 环境步进函数，根据输入动作更新环境状态，计算奖励和终止条件，并返回新的观测、奖励、终止标志和辅助信息
@@ -496,8 +511,8 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
 
         ref_v = self.ref["ref_speed"][k]
         ref_torque = self.ref["ref_torque"][k]
+        # 直接由智能体来调节动作，不施加第二次外部物理延迟
         motor_torque_cmd = ref_torque + residual_torque
-        motor_torque_cmd = (1.0 - self.torque_blend) * self.prev_torque + self.torque_blend * motor_torque_cmd
 
         grade_k = self.road["grade"][k]
         dyn = step_longitudinal_dynamics(
@@ -572,6 +587,15 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
                 if ref_window_sum > ENERGY_NORM_EPS * self.window_size:
                     ratio = window_agent / (ref_window_sum + ENERGY_NORM_EPS * self.window_size)
                     cost_window_energy = max(0.0, ratio - (1.0 + self.window_energy_tol))
+                    self.prev_window_cmp_gap = (
+                        window_agent - ref_window_sum
+                    ) / (abs(ref_window_sum) + ENERGY_NORM_EPS * self.window_size)
+                else:
+                    self.prev_window_cmp_gap = 0.0
+            else:
+                self.prev_window_cmp_gap = 0.0
+        else:
+            self.prev_window_cmp_gap = 0.0
 
         costs = {
             "speed": cost_speed,
@@ -599,7 +623,9 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             ref_cmp_energy_k=ref_cmp_energy_k,
             eta=eta,
             k=k,
+            ref_torque=ref_torque,
         )
+        self.prev_loss_delta = reward_info.get("loss_delta", 0.0)
 
         self.prev_torque = motor_torque
         self.prev_action = action.copy()
@@ -621,6 +647,8 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             "ref_speed": ref_v,
             "speed_err": speed_err,
             "dist_err": dist_err,
+            "ref_torque": ref_torque,
+            "motor_torque_cmd": motor_torque_cmd,
             "motor_torque": motor_torque,
             "motor_rpm": motor_rpm,
             "accel": accel,
@@ -662,6 +690,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         ref_cmp_energy_k,
         eta,
         k,
+        ref_torque,
     ) -> Tuple[float, dict]:
         track_penalty = ( # 跟踪误差的综合惩罚项，基于速度误差、距离误差和加速度误差的平方和，使用不同的权重进行组合，鼓励同时满足多个跟踪指标
             8.0 * (speed_err / self.speed_tol) ** 2
@@ -682,14 +711,17 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             return float(reward), info
 
         tracking_ok = speed_err <= self.speed_tol and dist_err <= self.dist_tol and accel_err <= self.accel_tol
-        w_c = self.energy_weight * self.sp["energy_scale"]
+        w_c = self.energy_weight * self.sp["energy_scale"] * 200.0
         w_u = 0.08
         ref_loss_density = ref_cmp_energy_k / max(self.ds, 1e-8)
         agent_loss_density = accounted_energy / max(self.ds, 1e-8)
         loss_delta = agent_loss_density - ref_loss_density
         torque_delta_penalty = w_u * (torque_diff / max(self.residual_torque_scale, 1e-8)) ** 2
+
         r_energy = -w_c * loss_delta - torque_delta_penalty
-        beta = 0.15
+        
+        # 2. 将门控强度从 0.15 放宽到 0.05
+        beta = 0.05
         g_track = math.exp(-beta * track_penalty)
         reward = -track_penalty + g_track * r_energy
 
@@ -716,11 +748,19 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             dist_term = (metrics.get("dist_mae", 0.0) / self.dist_tol) ** 2
             return float(-20.0 * (speed_term + dist_term))
 
-        ref_total = self.ref.get("ref_total_cmp_energy", self.ref["ref_total_energy"])
-        agent_total = self.total_cmp_energy_agent
+        ref_total = float(self.ref.get("ref_total_energy", 0.0))
+        agent_total = float(self.total_energy_agent)
         total_dist = max(self.n * self.ds, 1e-8)
         reward_saving = compute_saving_ratio(ref_total / total_dist, agent_total / total_dist)
-        return float(10.0 * self.sp["energy_scale"] * reward_saving)
+
+        ref_time_total = (
+            self.ref["ref_time"][min(max(self.k - 1, 0), len(self.ref["ref_time"]) - 1)]
+            if len(self.ref.get("ref_time", [])) > 0
+            else self.total_time_agent
+        )
+        time_gap_ratio = (self.total_time_agent - ref_time_total) / (ref_time_total + 1e-8)
+        time_penalty = 4.0 * (time_gap_ratio ** 2)
+        return float(10.0 * self.sp["energy_scale"] * reward_saving - time_penalty)
  
     def _build_obs(self) -> np.ndarray: # 构建状态观测函数，基于当前环境状态、参考轨迹、驾驶风格等信息，构建一个包含多维特征的状态观测向量，供模型输入使用
         k = self.k
@@ -737,9 +777,12 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         ref_v_norm = ref_v / 40.0 # 参考速度归一化，基于一个合理的最大速度值进行归一化处理，确保输入特征在适当的范围内，促进模型的学习和稳定性
         ref_d_norm = self.ref["ref_dist"][k] / (self.n * self.ds)
         ref_t_norm = self.ref["ref_torque"][k] / MOTOR_MAX_TORQUE
+        ref_loss_norm = self.ref["ref_cmp_energy_per_ds"][k] / self.ref_loss_scale
 
         speed_err_norm = (self.v - ref_v) / self.speed_tol
         dist_err_norm = dist_err_m / self.dist_tol
+        prev_loss_delta_norm = self.prev_loss_delta / self.ref_loss_scale
+        prev_window_gap_norm = self.prev_window_cmp_gap
 
         hist_act = self.prev_action.tolist()
 
@@ -761,8 +804,11 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
                 ref_v_norm,
                 ref_d_norm,
                 ref_t_norm,
+                ref_loss_norm,
                 speed_err_norm,
                 dist_err_norm,
+                prev_loss_delta_norm,
+                prev_window_gap_norm,
                 *hist_act,
                 *preview,
                 *style_oh,

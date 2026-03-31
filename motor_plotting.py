@@ -3,14 +3,18 @@ motor_plotting.py  ——  绘图模块
 =================================
 职责：
   - 跟踪与能耗总图
-  - 轨迹图
   - energy saving effect 图
   - saving trace 图
   - 10-step / rolling window saving 图
+  - 牵引/回收分诊断
+  - 速度区间分诊断
+  - 扭矩区间分诊断
+  - 工作点命中热图
   突出：Pure Control Saving / Raw Saving / Low-speed Benefit
 """
 
 import os
+import json
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -20,6 +24,9 @@ from typing import Dict, List, Optional
 # 中文字体设置（优先微软雅黑，回退 SimHei）
 plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "DejaVu Sans"]
 plt.rcParams["axes.unicode_minus"] = False
+
+GEAR_RATIO = 9.0
+WHEEL_RADIUS = 0.32
 
 
 # ============================================================
@@ -70,6 +77,35 @@ def _safe_saving_pct(ref_energy: np.ndarray, agent_energy: np.ndarray, eps: floa
     valid = np.abs(ref_arr) > eps
     out[valid] = (ref_arr[valid] - agent_arr[valid]) / (np.abs(ref_arr[valid]) + eps) * 100.0
     return out
+
+
+def _safe_total_saving_pct(ref_energy: np.ndarray, agent_energy: np.ndarray, eps: float = 1e-8) -> float:
+    if len(ref_energy) == 0 or len(agent_energy) == 0:
+        return 0.0
+    ref_total = float(np.sum(ref_energy))
+    agent_total = float(np.sum(agent_energy))
+    return (ref_total - agent_total) / (abs(ref_total) + eps) * 100.0
+
+
+def _bin_diagnostics(values: np.ndarray, ref_energy: np.ndarray, agent_energy: np.ndarray,
+                     bins: np.ndarray, labels: List[str]) -> List[dict]:
+    rows = []
+    for idx in range(len(labels)):
+        left = bins[idx]
+        right = bins[idx + 1]
+        mask = (values >= left) & (values < right)
+        count = int(np.sum(mask))
+        if count == 0:
+            rows.append({"label": labels[idx], "count": 0, "saving_pct": 0.0})
+            continue
+        saving_pct = _safe_total_saving_pct(ref_energy[mask], agent_energy[mask])
+        rows.append({"label": labels[idx], "count": count, "saving_pct": saving_pct})
+    return rows
+
+
+def _save_json(path: str, payload: dict) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
 # ============================================================
@@ -157,66 +193,7 @@ def plot_tracking_and_energy(infos: List[dict], metrics: dict, ref: dict,
 
 
 # ============================================================
-#  图 2：轨迹图（扭矩 + regen/coast + SOC）
-# ============================================================
-def plot_trajectory(infos: List[dict], ref: dict, style: str, save_dir: str):
-    """
-    绘制轨迹图：扭矩对比、残差扭矩、加速度误差、SOC 变化
-    """
-    agent_torque  = _extract_series(infos, "motor_torque")
-    ref_torque    = ref["ref_torque"][:len(agent_torque)]
-    soc           = _extract_series(infos, "soc")
-    residual_torque = _extract_series(infos, "residual_torque")
-    accel = _extract_series(infos, "accel")
-    ref_accel = _extract_series(infos, "ref_accel")
-    steps = np.arange(len(agent_torque))
-
-    fig, axes = plt.subplots(4, 1, figsize=(14, 12), sharex=True)
-
-    # 扭矩
-    ax = axes[0]
-    ax.plot(steps, ref_torque, 'b--', alpha=0.6, label='参考扭矩')
-    ax.plot(steps, agent_torque, 'r-', alpha=0.7, label='智能体扭矩')
-    ax.set_ylabel("扭矩 (Nm)")
-    ax.set_title(f"[{style.upper()}] 轨迹详细图")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # 残差扭矩
-    ax = axes[1]
-    ax.bar(steps, residual_torque, color='purple', alpha=0.5, width=1.0, label='残差扭矩')
-    ax.axhline(0, color='k', linewidth=0.5)
-    ax.set_ylabel("残差扭矩 (Nm)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # acceleration tracking
-    ax = axes[2]
-    ax.plot(steps, ref_accel, color='royalblue', linestyle='--', linewidth=1.4, label='参考加速度')
-    ax.plot(steps, accel, color='darkgreen', linewidth=1.4, label='智能体加速度')
-    ax.fill_between(steps, ref_accel, accel, color='mediumseagreen', alpha=0.12)
-    ax.set_ylabel("加速度 (m/s²)")
-    ax.set_title(
-        f"加速度跟踪  |  mae={np.mean(np.abs(accel - ref_accel)) if len(accel) > 0 else 0.0:.3f}"
-    )
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    # SOC
-    ax = axes[3]
-    ax.plot(steps, soc, 'b-', linewidth=1.5, label='SOC')
-    ax.set_ylabel("SOC")
-    ax.set_xlabel("距离步 (step)")
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f"trajectory_{style}.png"), dpi=150)
-    plt.close(fig)
-
-
-# ============================================================
-#  图 3：Energy Saving Effect 图
+#  图 2：Energy Saving Effect 图
 # ============================================================
 def plot_energy_saving_effect(infos: List[dict], metrics: dict, ref: dict,
                               style: str, save_dir: str):
@@ -300,7 +277,7 @@ def plot_energy_saving_effect(infos: List[dict], metrics: dict, ref: dict,
 
 
 # ============================================================
-#  图 4：Saving Trace 图
+#  图 3：Saving Trace 图
 # ============================================================
 def plot_saving_trace(infos: List[dict], ref: dict, style: str, save_dir: str):
     """
@@ -351,10 +328,10 @@ def plot_saving_trace(infos: List[dict], ref: dict, style: str, save_dir: str):
 
 
 # ============================================================
-#  图 5：10-step / Rolling Window Saving 图
+#  图 4：10-step / Rolling Window Saving 图
 # ============================================================
 def plot_rolling_window_saving(infos: List[dict], ref: dict, style: str,
-                                save_dir: str, window_size: int = 10):
+                                 save_dir: str, window_size: int = 10):
     """
     绘制 rolling window saving 图
     """
@@ -403,6 +380,247 @@ def plot_rolling_window_saving(infos: List[dict], ref: dict, style: str,
 
 
 # ============================================================
+#  诊断 1：牵引/回收分段
+# ============================================================
+def plot_traction_regen_diagnostics(infos: List[dict], ref: dict, style: str, save_dir: str) -> dict:
+    agent_torque = _extract_series(infos, "motor_torque")
+    agent_energy = _extract_series(infos, "energy_step")
+    agent_cmp = _extract_series(infos, "cmp_energy_step")
+    ref_energy = ref["ref_energy_per_ds"][:len(agent_energy)]
+    ref_cmp = ref.get("ref_cmp_energy_per_ds", ref_energy)[:len(agent_energy)]
+
+    masks = {
+        "traction": agent_torque >= 0.0,
+        "regen": agent_torque < 0.0,
+    }
+    rows = []
+    labels = []
+    saving_real = []
+    saving_reward = []
+    counts = []
+    for name, mask in masks.items():
+        labels.append("牵引段" if name == "traction" else "回收段")
+        counts.append(int(np.sum(mask)))
+        rows.append({
+            "segment": name,
+            "count": int(np.sum(mask)),
+            "saving_total_pct": _safe_total_saving_pct(ref_energy[mask], agent_energy[mask]),
+            "saving_reward_pct": _safe_total_saving_pct(ref_cmp[mask], agent_cmp[mask]),
+        })
+        saving_real.append(rows[-1]["saving_total_pct"])
+        saving_reward.append(rows[-1]["saving_reward_pct"])
+
+    x = np.arange(len(labels))
+    width = 0.35
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.bar(x - width / 2, saving_real, width=width, color="forestgreen", alpha=0.75, label="真实节能率")
+    ax.bar(x + width / 2, saving_reward, width=width, color="royalblue", alpha=0.75, label="训练口径节能率")
+    for idx, count in enumerate(counts):
+        ax.text(x[idx], max(saving_real[idx], saving_reward[idx], 0.0) + 1.0, f"n={count}", ha="center", fontsize=9)
+    ax.axhline(0, color="black", linewidth=0.8)
+    ax.set_xticks(x, labels)
+    ax.set_ylabel("节能率 (%)")
+    ax.set_title(f"[{style.upper()}] 诊断1：牵引/回收分段")
+    ax.legend()
+    ax.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"diagnostic_traction_regen_{style}.png"), dpi=150)
+    plt.close(fig)
+    return {"traction_regen": rows}
+
+
+# ============================================================
+#  诊断 2：速度区间
+# ============================================================
+def plot_speed_bin_diagnostics(infos: List[dict], ref: dict, style: str, save_dir: str) -> dict:
+    ref_speed = ref["ref_speed"][:len(infos)]
+    ref_energy = ref["ref_energy_per_ds"][:len(infos)]
+    agent_energy = _extract_series(infos, "energy_step")
+    bins = np.array([0.0, 10.0, 20.0, 30.0, 40.0, 1e9])
+    labels = ["0-10", "10-20", "20-30", "30-40", "40+"]
+    rows = _bin_diagnostics(ref_speed, ref_energy, agent_energy, bins, labels)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+    x = np.arange(len(labels))
+    axes[0].bar(x, [r["saving_pct"] for r in rows], color=np.where(np.array([r["saving_pct"] for r in rows]) >= 0, "green", "red"), alpha=0.7)
+    axes[0].axhline(0, color="black", linewidth=0.8)
+    axes[0].set_ylabel("节能率 (%)")
+    axes[0].set_title(f"[{style.upper()}] 诊断2：速度区间节能率")
+    axes[0].grid(True, axis="y", alpha=0.3)
+    axes[1].bar(x, [r["count"] for r in rows], color="slateblue", alpha=0.7)
+    axes[1].set_ylabel("步数")
+    axes[1].set_xticks(x, labels)
+    axes[1].set_xlabel("参考速度区间 (m/s)")
+    axes[1].grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"diagnostic_speed_bins_{style}.png"), dpi=150)
+    plt.close(fig)
+    return {"speed_bins": rows}
+
+
+# ============================================================
+#  诊断 3：扭矩区间
+# ============================================================
+def plot_torque_bin_diagnostics(infos: List[dict], ref: dict, style: str, save_dir: str) -> dict:
+    ref_torque = np.abs(ref["ref_torque"][:len(infos)])
+    ref_energy = ref["ref_energy_per_ds"][:len(infos)]
+    agent_energy = _extract_series(infos, "energy_step")
+    bins = np.array([0.0, 25.0, 50.0, 100.0, 150.0, 220.0, 1e9])
+    labels = ["0-25", "25-50", "50-100", "100-150", "150-220", "220+"]
+    rows = _bin_diagnostics(ref_torque, ref_energy, agent_energy, bins, labels)
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 7), sharex=True)
+    x = np.arange(len(labels))
+    axes[0].bar(x, [r["saving_pct"] for r in rows], color=np.where(np.array([r["saving_pct"] for r in rows]) >= 0, "green", "red"), alpha=0.7)
+    axes[0].axhline(0, color="black", linewidth=0.8)
+    axes[0].set_ylabel("节能率 (%)")
+    axes[0].set_title(f"[{style.upper()}] 诊断3：扭矩区间节能率")
+    axes[0].grid(True, axis="y", alpha=0.3)
+    axes[1].bar(x, [r["count"] for r in rows], color="darkorange", alpha=0.7)
+    axes[1].set_ylabel("步数")
+    axes[1].set_xticks(x, labels)
+    axes[1].set_xlabel("参考扭矩绝对值区间 (Nm)")
+    axes[1].grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"diagnostic_torque_bins_{style}.png"), dpi=150)
+    plt.close(fig)
+    return {"torque_bins": rows}
+
+
+# ============================================================
+#  诊断 4：路段分段
+# ============================================================
+def plot_route_segment_diagnostics(infos: List[dict], ref: dict, style: str, save_dir: str, num_segments: int = 10) -> dict:
+    agent_energy = _extract_series(infos, "energy_step")
+    ref_energy = ref["ref_energy_per_ds"][:len(agent_energy)]
+    n = len(agent_energy)
+    if n == 0:
+        return {"route_segments": []}
+
+    segment_len = max(n // num_segments, 1)
+    rows = []
+    labels = []
+    real_vals = []
+    counts = []
+    for seg_idx in range(num_segments):
+        start = seg_idx * segment_len
+        end = n if seg_idx == num_segments - 1 else min((seg_idx + 1) * segment_len, n)
+        if start >= n:
+            break
+        seg_ref = ref_energy[start:end]
+        seg_agent = agent_energy[start:end]
+        saving_pct = _safe_total_saving_pct(seg_ref, seg_agent)
+        label = f"{start}-{end}"
+        rows.append({
+            "segment_index": seg_idx,
+            "start_step": start,
+            "end_step": end,
+            "count": int(end - start),
+            "saving_pct": saving_pct,
+        })
+        labels.append(label)
+        real_vals.append(saving_pct)
+        counts.append(int(end - start))
+
+    x = np.arange(len(labels))
+    fig, axes = plt.subplots(2, 1, figsize=(13, 7), sharex=True)
+    axes[0].bar(x, real_vals, color=np.where(np.array(real_vals) >= 0, "green", "red"), alpha=0.75)
+    axes[0].axhline(0, color="black", linewidth=0.8)
+    axes[0].set_ylabel("节能率 (%)")
+    axes[0].set_title(f"[{style.upper()}] 诊断4：路段分段节能率")
+    axes[0].grid(True, axis="y", alpha=0.3)
+    axes[1].bar(x, counts, color="teal", alpha=0.75)
+    axes[1].set_ylabel("步数")
+    axes[1].set_xticks(x, labels, rotation=45)
+    axes[1].set_xlabel("路段 step 区间")
+    axes[1].grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"diagnostic_route_segments_{style}.png"), dpi=150)
+    plt.close(fig)
+    return {"route_segments": rows}
+
+
+# ============================================================
+#  诊断 5：工作点命中热图
+# ============================================================
+def plot_operating_point_heatmap(infos: List[dict], ref: dict, style: str, save_dir: str) -> dict:
+    agent_torque = _extract_series(infos, "motor_torque")
+    agent_rpm = _extract_series(infos, "motor_rpm")
+    ref_speed = ref["ref_speed"][:len(infos)]
+    ref_torque = ref["ref_torque"][:len(infos)]
+    ref_rpm = ref_speed / WHEEL_RADIUS * GEAR_RATIO * 60.0 / (2.0 * np.pi)
+
+    torque_min = float(min(np.min(agent_torque), np.min(ref_torque)))
+    torque_max = float(max(np.max(agent_torque), np.max(ref_torque)))
+    rpm_min = float(min(np.min(agent_rpm), np.min(ref_rpm)))
+    rpm_max = float(max(np.max(agent_rpm), np.max(ref_rpm)))
+    torque_bins = np.linspace(torque_min, torque_max, 41)
+    rpm_bins = np.linspace(rpm_min, rpm_max, 41)
+
+    fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
+    h_ref, _, _, im0 = axes[0].hist2d(ref_rpm, ref_torque, bins=[rpm_bins, torque_bins], cmap="Blues")
+    axes[0].set_title("参考工作点命中")
+    axes[0].set_xlabel("转速 (rpm)")
+    axes[0].set_ylabel("扭矩 (Nm)")
+    h_agent, _, _, im1 = axes[1].hist2d(agent_rpm, agent_torque, bins=[rpm_bins, torque_bins], cmap="Reds")
+    axes[1].set_title("智能体工作点命中")
+    axes[1].set_xlabel("转速 (rpm)")
+    fig.colorbar(im0, ax=axes[0], shrink=0.85)
+    fig.colorbar(im1, ax=axes[1], shrink=0.85)
+    fig.suptitle(f"[{style.upper()}] 诊断4：工作点命中热图")
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"diagnostic_operating_points_{style}.png"), dpi=150)
+    plt.close(fig)
+    return {
+        "operating_points": {
+            "agent_unique_points": int(len(agent_torque)),
+            "ref_unique_points": int(len(ref_torque)),
+            "rpm_range": [rpm_min, rpm_max],
+            "torque_range": [torque_min, torque_max],
+        }
+    }
+
+
+def plot_actual_torque_delta(infos: List[dict], ref: dict, style: str, save_dir: str) -> None:
+    """绘制参考/实际扭矩及残差、命令偏差、实际偏差。"""
+    agent_torque = _extract_series(infos, "motor_torque")
+    torque_cmd = _extract_series(infos, "motor_torque_cmd")
+    residual_torque = _extract_series(infos, "residual_torque")
+    ref_torque = _extract_series(infos, "ref_torque")
+    x_axis = ref["ref_dist"][:len(agent_torque)]
+    if len(x_axis) != len(agent_torque):
+        x_axis = np.arange(len(agent_torque))
+
+    cmd_delta = torque_cmd - ref_torque
+    actual_delta = agent_torque - ref_torque
+
+    fig, axes = plt.subplots(2, 1, figsize=(14, 8), sharex=True)
+
+    ax = axes[0]
+    ax.plot(x_axis, ref_torque, color="royalblue", linestyle="--", linewidth=1.5, label="参考扭矩")
+    ax.plot(x_axis, agent_torque, color="crimson", linewidth=1.6, label="智能体实际扭矩")
+    ax.fill_between(x_axis, ref_torque, agent_torque, color="orange", alpha=0.10)
+    ax.set_ylabel("扭矩 (Nm)")
+    ax.set_title(f"[{style.upper()}] 参考/实际扭矩与偏差图")
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3)
+
+    ax = axes[1]
+    ax.plot(x_axis, residual_torque, color="purple", linewidth=1.2, label="残差扭矩")
+    ax.plot(x_axis, cmd_delta, color="darkgreen", linewidth=1.3, label="命令偏差 = T_cmd - T_ref")
+    ax.plot(x_axis, actual_delta, color="darkorange", linewidth=1.5, label="实际偏差 = T_agent - T_ref")
+    ax.axhline(0.0, color="black", linewidth=0.8)
+    ax.set_ylabel("偏差 (Nm)")
+    ax.set_xlabel("距离 (m)")
+    ax.legend(loc="upper right")
+    ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"actual_torque_delta_{style}.png"), dpi=150)
+    plt.close(fig)
+
+
+# ============================================================
 #  训练曲线图（附加）
 # ============================================================
 def plot_training_curves(history: dict, style: str, save_dir: str):
@@ -435,7 +653,9 @@ def plot_training_curves(history: dict, style: str, save_dir: str):
 
     ax.set_ylabel("Episode Reward")
     ax.set_title(f"[{style.upper()}] 训练曲线")
-    ax.legend()
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend()
     ax.grid(True, alpha=0.3)
 
     # --- Lambda 变化 ---
@@ -448,7 +668,9 @@ def plot_training_curves(history: dict, style: str, save_dir: str):
             ax.plot(vals, label=f"λ_{name}", alpha=0.8)
     ax.set_ylabel("Lagrangian λ")
     ax.set_xlabel("Episode (energy stage)")
-    ax.legend(fontsize=8)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -471,14 +693,24 @@ def plot_all(eval_infos: List[dict],
     一键生成全部绘图
     """
     os.makedirs(save_dir, exist_ok=True)
+    stale_trajectory = os.path.join(save_dir, f"trajectory_{style}.png")
+    if os.path.exists(stale_trajectory):
+        os.remove(stale_trajectory)
 
     print(f"  生成绘图 [{style}] -> {save_dir}")
 
     plot_tracking_and_energy(eval_infos, eval_metrics, eval_ref, style, save_dir)
-    plot_trajectory(eval_infos, eval_ref, style, save_dir)
+    plot_actual_torque_delta(eval_infos, eval_ref, style, save_dir)
     plot_energy_saving_effect(eval_infos, eval_metrics, eval_ref, style, save_dir)
     plot_saving_trace(eval_infos, eval_ref, style, save_dir)
     plot_rolling_window_saving(eval_infos, eval_ref, style, save_dir, window_size)
+    diagnostics = {}
+    diagnostics.update(plot_traction_regen_diagnostics(eval_infos, eval_ref, style, save_dir))
+    diagnostics.update(plot_speed_bin_diagnostics(eval_infos, eval_ref, style, save_dir))
+    diagnostics.update(plot_torque_bin_diagnostics(eval_infos, eval_ref, style, save_dir))
+    diagnostics.update(plot_route_segment_diagnostics(eval_infos, eval_ref, style, save_dir))
+    diagnostics.update(plot_operating_point_heatmap(eval_infos, eval_ref, style, save_dir))
+    _save_json(os.path.join(save_dir, f"diagnostics_{style}.json"), diagnostics)
     plot_training_curves(history, style, save_dir)
 
-    print(f"  绘图完成：共 6 张图已保存到 {save_dir}")
+    print(f"  绘图完成：主图与分段/区间/工作点诊断已保存到 {save_dir}")
