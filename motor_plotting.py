@@ -114,7 +114,7 @@ def _save_json(path: str, payload: dict) -> None:
 def plot_tracking_and_energy(infos: List[dict], metrics: dict, ref: dict,
                              style: str, save_dir: str):
     """
-    绘制主图：速度跟踪、位移跟踪、累计节能率
+    绘制主图：速度跟踪、同一时间下的位移、累计节能率
     """
     agent_speed = _extract_series(infos, "speed")
     ref_speed = _extract_series(infos, "ref_speed")
@@ -122,6 +122,10 @@ def plot_tracking_and_energy(infos: List[dict], metrics: dict, ref: dict,
     if len(agent_dist) == 0 or not np.any(agent_dist):
         agent_dist = np.arange(len(agent_speed))
     ref_dist = ref["ref_dist"][:len(agent_speed)]
+    agent_time = _extract_series(infos, "total_time_agent")
+    if len(agent_time) == 0 or not np.any(agent_time):
+        agent_time = np.arange(len(agent_dist), dtype=float)
+    ref_time = ref.get("ref_time", np.arange(len(ref_dist), dtype=float))[:len(agent_dist)]
     agent_energy = _extract_series(infos, "energy_step")
     ref_energy = ref["ref_energy_per_ds"][:len(agent_energy)]
     reward_basis = _extract_series(infos, "cmp_energy_step")
@@ -130,7 +134,7 @@ def plot_tracking_and_energy(infos: List[dict], metrics: dict, ref: dict,
     ref_reward = ref.get("ref_cmp_energy_per_ds", ref_energy)[:len(agent_energy)]
     x_axis = ref_dist if len(ref_dist) == len(agent_speed) else np.arange(len(agent_speed))
 
-    fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=True)
+    fig, axes = plt.subplots(3, 1, figsize=(14, 11), sharex=False)
 
     # --- 速度跟踪 ---
     ax = axes[0]
@@ -144,13 +148,17 @@ def plot_tracking_and_energy(infos: List[dict], metrics: dict, ref: dict,
     )
     ax.legend(loc="upper right")
     ax.grid(True, alpha=0.3)
+    ax.set_xlabel("距离 (m)")
 
-    # --- 位移跟踪 ---
+    # --- 同一时间下的位移 ---
     ax = axes[1]
-    ax.plot(x_axis, ref_dist, color='royalblue', linestyle='--', alpha=0.85, linewidth=1.5, label='参考位移')
-    ax.plot(x_axis, agent_dist[:len(x_axis)], color='darkorange', alpha=0.9, linewidth=1.6, label='智能体位移')
-    ax.fill_between(x_axis, ref_dist, agent_dist[:len(x_axis)], alpha=0.10, color='goldenrod')
+    ax.plot(ref_time, ref_dist[:len(ref_time)], color='royalblue', linestyle='--', alpha=0.85, linewidth=1.5, label='参考位移-时间')
+    ax.plot(agent_time[:len(agent_dist)], agent_dist, color='darkorange', alpha=0.9, linewidth=1.6, label='智能体位移-时间')
     ax.set_ylabel("位移 (m)")
+    ax.set_xlabel("时间 (s)")
+    ref_end_time = float(ref_time[min(len(ref_time) - 1, len(ref_dist) - 1)]) if len(ref_time) > 0 else 0.0
+    agent_end_time = float(agent_time[len(agent_dist) - 1]) if len(agent_time) > 0 else 0.0
+    ax.set_title(f"同一时间下位移对比  |  参考到终点={ref_end_time:.2f}s  智能体到终点={agent_end_time:.2f}s")
     ax.legend(loc="upper left")
     ax.grid(True, alpha=0.3)
 
@@ -412,17 +420,30 @@ def plot_traction_regen_diagnostics(infos: List[dict], ref: dict, style: str, sa
 
     x = np.arange(len(labels))
     width = 0.35
-    fig, ax = plt.subplots(figsize=(10, 5))
+    fig, axes = plt.subplots(2, 1, figsize=(11, 6), sharex=True)
+
+    ax = axes[0]
     ax.bar(x - width / 2, saving_real, width=width, color="forestgreen", alpha=0.75, label="真实节能率")
     ax.bar(x + width / 2, saving_reward, width=width, color="royalblue", alpha=0.75, label="训练口径节能率")
-    for idx, count in enumerate(counts):
-        ax.text(x[idx], max(saving_real[idx], saving_reward[idx], 0.0) + 1.0, f"n={count}", ha="center", fontsize=9)
     ax.axhline(0, color="black", linewidth=0.8)
-    ax.set_xticks(x, labels)
+    y_min = min(min(saving_real), min(saving_reward), 0.0)
+    y_max = max(max(saving_real), max(saving_reward), 0.0)
+    pad = max((y_max - y_min) * 0.18, 1.0)
+    ax.set_ylim(y_min - pad, y_max + pad)
     ax.set_ylabel("节能率 (%)")
     ax.set_title(f"[{style.upper()}] 诊断1：牵引/回收分段")
-    ax.legend()
+    ax.legend(loc="upper right")
     ax.grid(True, axis="y", alpha=0.3)
+
+    ax = axes[1]
+    ax.bar(x, counts, color="slateblue", alpha=0.75, width=0.45)
+    for idx, count in enumerate(counts):
+        ax.text(x[idx], count + max(counts) * 0.03 + 1e-6, f"n={count}", ha="center", va="bottom", fontsize=9)
+    ax.set_ylabel("步数")
+    ax.set_xticks(x, labels)
+    ax.set_xlabel("分段类型")
+    ax.grid(True, axis="y", alpha=0.3)
+
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"diagnostic_traction_regen_{style}.png"), dpi=150)
     plt.close(fig)
@@ -543,7 +564,7 @@ def plot_route_segment_diagnostics(infos: List[dict], ref: dict, style: str, sav
 # ============================================================
 #  诊断 5：工作点命中热图
 # ============================================================
-def plot_operating_point_heatmap(infos: List[dict], ref: dict, style: str, save_dir: str) -> dict:
+def plot_operating_point_heatmap(infos: List[dict], ref: dict, style: str, save_dir: str, eff_map: Optional[dict] = None) -> dict:
     agent_torque = _extract_series(infos, "motor_torque")
     agent_rpm = _extract_series(infos, "motor_rpm")
     ref_speed = ref["ref_speed"][:len(infos)]
@@ -557,17 +578,44 @@ def plot_operating_point_heatmap(infos: List[dict], ref: dict, style: str, save_
     torque_bins = np.linspace(torque_min, torque_max, 41)
     rpm_bins = np.linspace(rpm_min, rpm_max, 41)
 
-    fig, axes = plt.subplots(1, 2, figsize=(13, 5), sharey=True)
-    h_ref, _, _, im0 = axes[0].hist2d(ref_rpm, ref_torque, bins=[rpm_bins, torque_bins], cmap="Blues")
-    axes[0].set_title("参考工作点命中")
-    axes[0].set_xlabel("转速 (rpm)")
-    axes[0].set_ylabel("扭矩 (Nm)")
-    h_agent, _, _, im1 = axes[1].hist2d(agent_rpm, agent_torque, bins=[rpm_bins, torque_bins], cmap="Reds")
-    axes[1].set_title("智能体工作点命中")
-    axes[1].set_xlabel("转速 (rpm)")
-    fig.colorbar(im0, ax=axes[0], shrink=0.85)
-    fig.colorbar(im1, ax=axes[1], shrink=0.85)
-    fig.suptitle(f"[{style.upper()}] 诊断4：工作点命中热图")
+    fig, ax = plt.subplots(1, 1, figsize=(11, 7))
+    ax.set_facecolor('#E0E0E0')  # 灰色背景代表电机无数据的非物理工作区域(图中空白缺口)
+    
+    # 绘制满底色的效率图
+    heatmap_im = None
+    if eff_map is not None:
+        X, Y = np.meshgrid(eff_map["speeds"], eff_map["torques"])
+        Z = eff_map["eff"] * 100.0
+        levels = np.linspace(72, 96, 25)
+        heatmap_im = ax.contourf(X, Y, Z, levels=levels, cmap='viridis', alpha=0.9, zorder=0)
+        cs = ax.contour(X, Y, Z, levels=[75, 80, 85, 90, 93, 95], colors='white', alpha=0.5, linewidths=0.8, zorder=1)
+        ax.clabel(cs, inline=True, fontsize=8, fmt='%.0f%%')
+
+    # 用散点路径图叠加真实轨迹点迹 (双轨合并在一张图上)
+    ax.plot(ref_rpm, ref_torque, marker='s', color='#333333', alpha=0.45, markersize=3, linewidth=1.5, zorder=4, label='参考老司机轨迹 (Ref)')
+    ax.plot(agent_rpm, agent_torque, marker='o', color='white', markeredgecolor='red', alpha=0.8, markersize=4, linewidth=1.5, zorder=5, label='智能体轨迹 (Agent)')
+    
+    # 起终点标识
+    if len(ref_rpm) > 0:
+        ax.plot(ref_rpm[0], ref_torque[0], marker='^', color='cyan', markersize=9, markeredgecolor='black', zorder=6, label='起点')
+        ax.plot(ref_rpm[-1], ref_torque[-1], marker='*', color='gold', markersize=13, markeredgecolor='red', zorder=6, label='终点')
+
+    ax.set_title(f"[{style.upper()}] 主控工作点 vs 参考工作点 偏移对比图")
+    ax.set_xlabel("电机转速 (rpm)")
+    ax.set_ylabel("输出扭矩 (Nm)")
+    ax.legend(loc="best", fontsize=9, framealpha=0.9)
+    
+    # 给效率底图加上正常排版的全局颜色条
+    if heatmap_im is not None:
+        cbar = fig.colorbar(heatmap_im, ax=ax, shrink=0.9, pad=0.03)
+        cbar.set_label("电机效率 (%)")
+    
+    # 将视角动态框定在轨迹的附近，留出余量
+    pad_rpm = max((rpm_max - rpm_min) * 0.15, 1000)
+    pad_torque = max((torque_max - torque_min) * 0.15, 20)
+    ax.set_xlim(max(0, rpm_min - pad_rpm), rpm_max + pad_rpm)
+    ax.set_ylim(torque_min - pad_torque, torque_max + pad_torque)
+    
     plt.tight_layout()
     plt.savefig(os.path.join(save_dir, f"diagnostic_operating_points_{style}.png"), dpi=150)
     plt.close(fig)
@@ -688,7 +736,8 @@ def plot_all(eval_infos: List[dict],
              history: dict,
              style: str,
              save_dir: str,
-             window_size: int = 10):
+             window_size: int = 10,
+             eff_map: Optional[dict] = None):
     """
     一键生成全部绘图
     """
@@ -709,7 +758,7 @@ def plot_all(eval_infos: List[dict],
     diagnostics.update(plot_speed_bin_diagnostics(eval_infos, eval_ref, style, save_dir))
     diagnostics.update(plot_torque_bin_diagnostics(eval_infos, eval_ref, style, save_dir))
     diagnostics.update(plot_route_segment_diagnostics(eval_infos, eval_ref, style, save_dir))
-    diagnostics.update(plot_operating_point_heatmap(eval_infos, eval_ref, style, save_dir))
+    diagnostics.update(plot_operating_point_heatmap(eval_infos, eval_ref, style, save_dir, eff_map=eff_map))
     _save_json(os.path.join(save_dir, f"diagnostics_{style}.json"), diagnostics)
     plot_training_curves(history, style, save_dir)
 

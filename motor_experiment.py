@@ -288,6 +288,7 @@ def run_single_seed(style: str,
         history=result["history"],
         style=style,
         save_dir=plot_dir,
+        eff_map=eff_map
     )
 
     return result
@@ -376,6 +377,7 @@ def run_full_experiment(styles: List[str] = ["normal"],
             history=best["history"],
             style=style,
             save_dir=plot_dir,
+            eff_map=eff_map,
         )
 
     # 汇总 json
