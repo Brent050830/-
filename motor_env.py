@@ -70,6 +70,9 @@ STYLE_PROFILES = {
         "speed_tol_ms": 0.20, # 速度容差 (m/s)，最大允许的误差
         "dist_tol_m": 0.30, # 距离容差 (m)
         "accel_tol_ms2": 0.25, # 加速度容差 (m/s^2)
+        "terminal_time_weight": 4.0,
+        "hard_violation_scale": 2.0,
+        "terminal_track_fail_weight": 20.0,
         "one_hot": [1, 0, 0], # 驾驶风格的独热编码表示
     },
     "normal": {
@@ -81,6 +84,9 @@ STYLE_PROFILES = {
         "speed_tol_ms": 0.25, # 速度容差 (m/s)，最大允许的误差
         "dist_tol_m": 0.40, # 距离容差 (m)
         "accel_tol_ms2": 0.35, # 加速度容差 (m/s^2)
+        "terminal_time_weight": 5.0,
+        "hard_violation_scale": 2.0,
+        "terminal_track_fail_weight": 20.0,
         "one_hot": [0, 1, 0], # 驾驶风格的独热编码表示
     },
     "sport": {
@@ -89,9 +95,12 @@ STYLE_PROFILES = {
         "brake_limit": 4.0,
         "throttle_bias": 0.70,
         "energy_scale": 0.5,
-        "speed_tol_ms": 0.30,
-        "dist_tol_m": 0.50,
-        "accel_tol_ms2": 0.50,
+        "speed_tol_ms": 0.16,
+        "dist_tol_m": 0.40,
+        "accel_tol_ms2": 0.40,
+        "terminal_time_weight": 5.0,
+        "hard_violation_scale": 1.2,
+        "terminal_track_fail_weight": 65.0,
         "one_hot": [0, 0, 1],
     },
 }
@@ -306,6 +315,10 @@ def generate_road( # 生成随机路况，包含总距离、采样间隔、坡�
     grade_sigma: float = 0.03,
     curve_prob: float = 0.15,
     curve_speed_range: Tuple[float, float] = (8.0, 25.0),
+    urban_prob: float = 0.08,
+    urban_speed_range: Tuple[float, float] = (10.0, 20.0),
+    stop_prob: float = 0.03,
+    stop_speed_range: Tuple[float, float] = (0.5, 1.2),
     seed: Optional[int] = None,
 ) -> Dict[str, np.ndarray]:
     rng = np.random.RandomState(seed)
@@ -317,6 +330,8 @@ def generate_road( # 生成随机路况，包含总距离、采样间隔、坡�
     grade = np.convolve(raw_grade, kernel, mode="same")
 
     speed_limit = np.full(n, 33.3)
+    urban_mask = np.zeros(n, dtype=np.float32)
+    stop_mask = np.zeros(n, dtype=np.float32)
     in_curve = False
     curve_speed = 33.3
     curve_remaining = 0
@@ -331,12 +346,44 @@ def generate_road( # 生成随机路况，包含总距离、采样间隔、坡�
             if curve_remaining <= 0:
                 in_curve = False
 
+    i = 40
+    while i < n - 60:
+        if rng.rand() < urban_prob * ds / 100.0:
+            urban_len = rng.randint(80, 220)
+            urban_speed = rng.uniform(*urban_speed_range)
+            end = min(n, i + urban_len)
+            speed_limit[i:end] = np.minimum(speed_limit[i:end], urban_speed)
+            urban_mask[i:end] = 1.0
+            i = end + rng.randint(30, 100)
+        else:
+            i += 1
+
+    i = 80
+    while i < n - 120:
+        if rng.rand() < stop_prob * ds / 100.0:
+            stop_len = rng.randint(25, 45)
+            crawl_speed = rng.uniform(*stop_speed_range)
+            exit_len = rng.randint(35, 90)
+            exit_speed = rng.uniform(6.0, 14.0)
+
+            stop_end = min(n, i + stop_len)
+            exit_end = min(n, stop_end + exit_len)
+            speed_limit[i:stop_end] = np.minimum(speed_limit[i:stop_end], crawl_speed)
+            speed_limit[stop_end:exit_end] = np.minimum(speed_limit[stop_end:exit_end], exit_speed)
+            stop_mask[i:stop_end] = 1.0
+            urban_mask[stop_end:exit_end] = 1.0
+            i = exit_end + rng.randint(80, 180)
+        else:
+            i += 1
+
     curvature = np.where(speed_limit < 30.0, 1.0 / (speed_limit + 1e-6), 0.0)
     return {
         "s": s,
         "grade": grade,
         "speed_limit": speed_limit,
         "curvature": curvature,
+        "urban_mask": urban_mask,
+        "stop_mask": stop_mask,
         "n": n,
         "ds": ds,
     }
@@ -360,12 +407,26 @@ def generate_reference_trajectory( # 生成参考轨迹，基于路况信息和�
 
     ref_speed[0] = road["speed_limit"][0] * sp["speed_scale"] * 0.8
     accel_lim = sp["accel_limit"]
+    brake_lim = sp["brake_limit"]
     ref_soc = 1.0
 
     for k in range(1, n):
-        target_v = road["speed_limit"][k] * sp["speed_scale"]
+        local_target_v = road["speed_limit"][k] * sp["speed_scale"]
         v_prev = ref_speed[k - 1]
-        accel_desired = np.clip(0.5 * (target_v - v_prev), -accel_lim, accel_lim)
+        lookahead_m = max(80.0, v_prev * 4.0, v_prev ** 2 / max(2.0 * brake_lim, 1e-6))
+        lookahead_steps = min(n - k - 1, max(1, int(lookahead_m / max(ds, 1e-6))))
+        target_v = local_target_v
+        for h in range(1, lookahead_steps + 1):
+            j = k + h
+            future_limit = road["speed_limit"][j] * sp["speed_scale"]
+            if future_limit >= target_v:
+                continue
+            dist_to_event = h * ds
+            feasible_v = math.sqrt(max(future_limit ** 2 + 2.0 * brake_lim * dist_to_event, 0.0))
+            target_v = min(target_v, feasible_v)
+
+        accel_gain = 0.5 + 0.4 * sp["throttle_bias"]
+        accel_desired = np.clip(accel_gain * (target_v - v_prev), -brake_lim, accel_lim)
         grade_k = road["grade"][k]
         f_roll = VEHICLE_MASS * GRAVITY * ROLL_RESIST * math.cos(grade_k)
         f_grade = VEHICLE_MASS * GRAVITY * math.sin(grade_k)
@@ -413,7 +474,7 @@ def generate_reference_trajectory( # 生成参考轨迹，基于路况信息和�
 
 
 class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空间、奖励计算等核心逻辑，支持不同驾驶风格和模式的训练
-    OBS_DIM = 30 # 状态观测维度，包含当前速度、SOC、扭矩、预测信息、驾驶风格等多维特征
+    OBS_DIM = 28 # 状态观测维度，包含当前速度、SOC、扭矩、预测信息、驾驶风格等多维特征
     ACT_DIM = 1 # 动作空间维度，表示电机扭矩的控制量
     CONSTRAINT_NAMES = ["speed", "distance", "smoothness", "projection", "window_energy"] # 约束名称列表，用于评估不同类型的约束违反程度
 
@@ -475,7 +536,6 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         self.cost_history = {name: [] for name in self.CONSTRAINT_NAMES}
         self.prev_loss_delta = 0.0
         self.prev_window_cmp_gap = 0.0
-
         self._compute_obs_dim()
 
     def _compute_obs_dim(self):
@@ -542,7 +602,6 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
 
         ref_energy_k = self.ref["ref_energy_per_ds"][k]
         ref_cmp_energy_k = self.ref["ref_cmp_energy_per_ds"][k]
-
         self.total_energy_agent += energy_step
         self.total_cmp_energy_agent += cmp_energy_step
         self.total_time_agent += dt_k
@@ -559,7 +618,9 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
 
         speed_err = abs(v_new - ref_v)
         ref_dist_k = self.ref["ref_dist"][min(k + 1, self.n - 1)]
+        ref_time_k = self.ref.get("ref_time", np.zeros(self.n))[min(k + 1, self.n - 1)]
         dist_err = abs(self.agent_dist - ref_dist_k)
+        time_err_s = self.total_time_agent - ref_time_k
         torque_diff = abs(motor_torque - self.prev_torque)
         ref_accel = self.ref["ref_accel"][k] if "ref_accel" in self.ref else 0.0
         accel_err = abs(accel - ref_accel)
@@ -624,15 +685,19 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             eta=eta,
             k=k,
             ref_torque=ref_torque,
+            time_err_s=time_err_s,
         )
         self.prev_loss_delta = reward_info.get("loss_delta", 0.0)
-
         self.prev_torque = motor_torque
         self.prev_action = action.copy()
         self.v = v_new
         self.k += 1
 
-        hard_violation = speed_err > self.speed_tol * 2.0 or dist_err > self.dist_tol * 2.0 # 严重违反约束的判断条件，基于速度误差和距离误差是否超过两倍的容差阈值，作为环境终止和奖励惩罚的重要依据
+        violation_scale = float(self.sp.get("hard_violation_scale", 2.0))
+        hard_violation = (
+            speed_err > self.speed_tol * violation_scale
+            or dist_err > self.dist_tol * violation_scale
+        ) # 严重违反约束的判断条件，基于速度误差和距离误差是否超过风格化容差阈值，作为环境终止和奖励惩罚的重要依据
         done = (self.k >= self.n - 1) or (self.soc <= 0.01)
         terminal_reward = 0.0
         if done and self.k >= self.n - 2:
@@ -647,6 +712,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             "ref_speed": ref_v,
             "speed_err": speed_err,
             "dist_err": dist_err,
+            "time_err_s": time_err_s,
             "ref_torque": ref_torque,
             "motor_torque_cmd": motor_torque_cmd,
             "motor_torque": motor_torque,
@@ -691,6 +757,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         eta,
         k,
         ref_torque,
+        time_err_s,
     ) -> Tuple[float, dict]:
         track_penalty = ( # 跟踪误差的综合惩罚项，基于速度误差、距离误差和加速度误差的平方和，使用不同的权重进行组合，鼓励同时满足多个跟踪指标
             8.0 * (speed_err / self.speed_tol) ** 2
@@ -719,8 +786,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         torque_delta_penalty = w_u * (torque_diff / max(self.residual_torque_scale, 1e-8)) ** 2
 
         r_energy = -w_c * loss_delta - torque_delta_penalty
-        
-        # 2. 将门控强度从 0.15 放宽到 0.05
+
         beta = 0.05
         g_track = math.exp(-beta * track_penalty)
         reward = -track_penalty + g_track * r_energy
@@ -746,7 +812,8 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         if not metrics.get("tracking_ok", False):
             speed_term = (metrics.get("speed_mae", 0.0) / self.speed_tol) ** 2
             dist_term = (metrics.get("dist_mae", 0.0) / self.dist_tol) ** 2
-            return float(-20.0 * (speed_term + dist_term))
+            fail_weight = float(self.sp.get("terminal_track_fail_weight", 20.0))
+            return float(-fail_weight * (speed_term + dist_term))
 
         ref_total = float(self.ref.get("ref_total_energy", 0.0))
         agent_total = float(self.total_energy_agent)
@@ -759,7 +826,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             else self.total_time_agent
         )
         time_gap_ratio = (self.total_time_agent - ref_time_total) / (ref_time_total + 1e-8)
-        time_penalty = 4.0 * (time_gap_ratio ** 2)
+        time_penalty = float(self.sp.get("terminal_time_weight", 5.0)) * (time_gap_ratio ** 2)
         return float(10.0 * self.sp["energy_scale"] * reward_saving - time_penalty)
  
     def _build_obs(self) -> np.ndarray: # 构建状态观测函数，基于当前环境状态、参考轨迹、驾驶风格等信息，构建一个包含多维特征的状态观测向量，供模型输入使用

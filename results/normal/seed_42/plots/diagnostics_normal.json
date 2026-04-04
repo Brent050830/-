@@ -2,15 +2,15 @@
   "traction_regen": [
     {
       "segment": "traction",
-      "count": 998,
-      "saving_total_pct": 1.3175046759025821,
-      "saving_reward_pct": 2.4091573760105724
+      "count": 737,
+      "saving_total_pct": 2.0787361511742724,
+      "saving_reward_pct": 25.170536652548687
     },
     {
       "segment": "regen",
-      "count": 1,
-      "saving_total_pct": 36375602.29376007,
-      "saving_reward_pct": -12329788.721569771
+      "count": 262,
+      "saving_total_pct": 0.6607368691628219,
+      "saving_reward_pct": -0.6636115104551509
     }
   ],
   "speed_bins": [
@@ -21,18 +21,18 @@
     },
     {
       "label": "10-20",
-      "count": 0,
-      "saving_pct": 0.0
+      "count": 91,
+      "saving_pct": -2.3633972070731764
     },
     {
       "label": "20-30",
-      "count": 56,
-      "saving_pct": 2.715955930484032
+      "count": 342,
+      "saving_pct": 1.4915623134234657
     },
     {
       "label": "30-40",
-      "count": 943,
-      "saving_pct": 0.9745336002318522
+      "count": 566,
+      "saving_pct": 4.701679203303629
     },
     {
       "label": "40+",
@@ -43,28 +43,28 @@
   "torque_bins": [
     {
       "label": "0-25",
-      "count": 206,
-      "saving_pct": -0.6703965140399352
+      "count": 130,
+      "saving_pct": -2.3410420641429495
     },
     {
       "label": "25-50",
-      "count": 635,
-      "saving_pct": 0.88609096641677
+      "count": 285,
+      "saving_pct": -1.154817922387582
     },
     {
       "label": "50-100",
-      "count": 78,
-      "saving_pct": 1.7596599668378472
+      "count": 261,
+      "saving_pct": 0.5224158510059209
     },
     {
       "label": "100-150",
-      "count": 44,
-      "saving_pct": 2.6549358178263773
+      "count": 217,
+      "saving_pct": 2.550479013254385
     },
     {
       "label": "150-220",
-      "count": 36,
-      "saving_pct": 2.65877993193962
+      "count": 106,
+      "saving_pct": 5.3569516771305725
     },
     {
       "label": "220+",
@@ -78,82 +78,82 @@
       "start_step": 0,
       "end_step": 99,
       "count": 99,
-      "saving_pct": 2.5980915687715673
+      "saving_pct": 4.6304831826784065
     },
     {
       "segment_index": 1,
       "start_step": 99,
       "end_step": 198,
       "count": 99,
-      "saving_pct": 1.3801617319669195
+      "saving_pct": -0.6426494022940348
     },
     {
       "segment_index": 2,
       "start_step": 198,
       "end_step": 297,
       "count": 99,
-      "saving_pct": 0.8023072912518572
+      "saving_pct": -0.572611177365648
     },
     {
       "segment_index": 3,
       "start_step": 297,
       "end_step": 396,
       "count": 99,
-      "saving_pct": 1.242932499969613
+      "saving_pct": 0.5665217400276457
     },
     {
       "segment_index": 4,
       "start_step": 396,
       "end_step": 495,
       "count": 99,
-      "saving_pct": -0.26537558359139635
+      "saving_pct": 0.6753737587163271
     },
     {
       "segment_index": 5,
       "start_step": 495,
       "end_step": 594,
       "count": 99,
-      "saving_pct": 0.13305770345000895
+      "saving_pct": -0.5419205991034457
     },
     {
       "segment_index": 6,
       "start_step": 594,
       "end_step": 693,
       "count": 99,
-      "saving_pct": 0.8915153008768445
+      "saving_pct": 0.20053794093583868
     },
     {
       "segment_index": 7,
       "start_step": 693,
       "end_step": 792,
       "count": 99,
-      "saving_pct": 1.0802018134698894
+      "saving_pct": 4.99730234285562
     },
     {
       "segment_index": 8,
       "start_step": 792,
       "end_step": 891,
       "count": 99,
-      "saving_pct": 0.4568954913752957
+      "saving_pct": -1.5230119884904043
     },
     {
       "segment_index": 9,
       "start_step": 891,
       "end_step": 999,
       "count": 108,
-      "saving_pct": -0.16567328077977755
+      "saving_pct": -0.6983383043951159
     }
   ],
   "operating_points": {
     "agent_unique_points": 999,
     "ref_unique_points": 999,
     "rpm_range": [
-      7138.367746050782,
-      8945.8808742429
+      4940.726553077515,
+      8941.01823913585
     ],
     "torque_range": [
-      -0.6143307089805603,
-      152.51535390644761
+      -114.61210591871927,
+      154.49854774924316
     ]
   }
 }

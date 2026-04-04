@@ -349,34 +349,66 @@ def plot_rolling_window_saving(infos: List[dict], ref: dict, style: str,
     # rolling sum
     agent_roll = _rolling_sum(agent_energy, window_size)
     ref_roll   = _rolling_sum(ref_energy, window_size)
-    roll_saving_pct = (ref_roll - agent_roll) / (np.abs(ref_roll) + 1e-8) * 100
+    if len(ref_roll) > 0:
+        abs_ref_roll = np.abs(ref_roll)
+        # 停走/回收窗口里参考能耗可能接近 0，直接算百分比会被极端放大
+        denom_floor = max(float(np.percentile(abs_ref_roll, 15)) * 0.25, 0.5)
+        valid = abs_ref_roll >= denom_floor
+    else:
+        denom_floor = 0.5
+        valid = np.zeros_like(ref_roll, dtype=bool)
+
+    roll_saving_pct = np.full(len(ref_roll), np.nan, dtype=float)
+    roll_saving_pct[valid] = (
+        (ref_roll[valid] - agent_roll[valid]) / (np.abs(ref_roll[valid]) + 1e-8) * 100.0
+    )
     steps = np.arange(len(roll_saving_pct))
 
     fig, axes = plt.subplots(2, 1, figsize=(14, 8))
 
     # 滑窗节能率
     ax = axes[0]
-    colors = np.where(roll_saving_pct >= 0, 'green', 'red')
-    ax.bar(steps, roll_saving_pct, color=colors, alpha=0.6, width=1.0)
+    valid_steps = steps[valid]
+    valid_pct = roll_saving_pct[valid]
+    colors = np.where(valid_pct >= 0, 'green', 'red')
+    ax.bar(valid_steps, valid_pct, color=colors, alpha=0.6, width=1.0)
+    invalid_count = int(np.sum(~valid))
+    if invalid_count > 0:
+        ax.scatter(
+            steps[~valid],
+            np.zeros(invalid_count),
+            s=8,
+            color='gray',
+            alpha=0.45,
+            label='低分母窗口(已跳过)',
+        )
     ax.axhline(0, color='k', linewidth=0.8)
     ax.set_ylabel(f"{window_size}-step 窗口节能率 (%)")
     ax.set_title(f"[{style.upper()}] Rolling Window Saving (window={window_size})")
     ax.grid(True, alpha=0.3)
+    if len(valid_pct) > 0:
+        lo = float(np.percentile(valid_pct, 2))
+        hi = float(np.percentile(valid_pct, 98))
+        pad = max((hi - lo) * 0.15, 3.0)
+        ax.set_ylim(lo - pad, hi + pad)
 
     # 统计
-    neg_ratio = float(np.sum(roll_saving_pct < 0)) / max(len(roll_saving_pct), 1) * 100
-    worst     = float(np.min(roll_saving_pct)) if len(roll_saving_pct) > 0 else 0.0
-    mean_sv   = float(np.mean(roll_saving_pct)) if len(roll_saving_pct) > 0 else 0.0
+    neg_ratio = float(np.sum(valid_pct < 0)) / max(len(valid_pct), 1) * 100
+    worst     = float(np.min(valid_pct)) if len(valid_pct) > 0 else 0.0
+    mean_sv   = float(np.mean(valid_pct)) if len(valid_pct) > 0 else 0.0
 
     ax.text(0.02, 0.05,
-            f"mean={mean_sv:.1f}%  worst={worst:.1f}%  neg_ratio={neg_ratio:.1f}%",
+            f"mean={mean_sv:.1f}%  worst={worst:.1f}%  neg_ratio={neg_ratio:.1f}%  skipped={invalid_count}",
             transform=ax.transAxes, fontsize=10, verticalalignment='bottom',
             bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+    if invalid_count > 0:
+        ax.legend(loc='upper right')
 
     # 滑窗能耗对比
     ax = axes[1]
     ax.plot(steps, ref_roll, 'b--', alpha=0.7, label=f'参考 {window_size}-step 能耗')
     ax.plot(steps, agent_roll, 'r-', alpha=0.7, label=f'智能体 {window_size}-step 能耗')
+    ax.axhline(0, color='k', linewidth=0.8)
     ax.set_ylabel("窗口累积能耗 (Wh)")
     ax.set_xlabel("窗口起始 step")
     ax.legend()

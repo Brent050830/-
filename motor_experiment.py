@@ -33,11 +33,30 @@ def build_road_sets(eff_map: dict,
     """
     构造训练 / 评估 / stress 三套道路和参考轨迹
     """
-    train_road = generate_road(total_dist=train_dist, seed=seed_base + 100)
-    eval_road  = generate_road(total_dist=eval_dist,  seed=seed_base + 200)
-    stress_road = generate_road(total_dist=stress_dist, seed=seed_base + 300,
-                                grade_sigma=0.06, curve_prob=0.25,
-                                curve_speed_range=(5.0, 18.0))
+    train_road = generate_road(
+        total_dist=train_dist,
+        seed=seed_base + 100,
+        curve_prob=0.18,
+        urban_prob=0.10,
+        stop_prob=0.05,
+    )
+    eval_road = generate_road(
+        total_dist=eval_dist,
+        seed=seed_base + 200,
+        curve_prob=0.16,
+        urban_prob=0.08,
+        stop_prob=0.04,
+    )
+    stress_road = generate_road(
+        total_dist=stress_dist,
+        seed=seed_base + 300,
+        grade_sigma=0.06,
+        curve_prob=0.25,
+        curve_speed_range=(5.0, 18.0),
+        urban_prob=0.14,
+        stop_prob=0.07,
+        stop_speed_range=(0.5, 1.0),
+    )
 
     train_ref  = generate_reference_trajectory(train_road,  style=style, eff_map=eff_map)
     eval_ref   = generate_reference_trajectory(eval_road,   style=style, eff_map=eff_map)
