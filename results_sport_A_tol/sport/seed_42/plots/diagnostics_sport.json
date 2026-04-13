@@ -1,0 +1,159 @@
+{
+  "traction_regen": [
+    {
+      "segment": "traction",
+      "count": 737,
+      "saving_total_pct": 20.95659890638744,
+      "saving_reward_pct": 64.69802603119092
+    },
+    {
+      "segment": "regen",
+      "count": 262,
+      "saving_total_pct": 0.26547873451160253,
+      "saving_reward_pct": -0.19549905184668043
+    }
+  ],
+  "speed_bins": [
+    {
+      "label": "0-10",
+      "count": 0,
+      "saving_pct": 0.0
+    },
+    {
+      "label": "10-20",
+      "count": 0,
+      "saving_pct": 0.0
+    },
+    {
+      "label": "20-30",
+      "count": 207,
+      "saving_pct": 52.11416558444626
+    },
+    {
+      "label": "30-40",
+      "count": 792,
+      "saving_pct": 18.738968029540516
+    },
+    {
+      "label": "40+",
+      "count": 0,
+      "saving_pct": 0.0
+    }
+  ],
+  "torque_bins": [
+    {
+      "label": "0-25",
+      "count": 52,
+      "saving_pct": -0.620087779909573
+    },
+    {
+      "label": "25-50",
+      "count": 284,
+      "saving_pct": -5.637532133311083
+    },
+    {
+      "label": "50-100",
+      "count": 339,
+      "saving_pct": -7.363701226375157
+    },
+    {
+      "label": "100-150",
+      "count": 174,
+      "saving_pct": 23.68914211380858
+    },
+    {
+      "label": "150-220",
+      "count": 150,
+      "saving_pct": 32.23777162943734
+    },
+    {
+      "label": "220+",
+      "count": 0,
+      "saving_pct": 0.0
+    }
+  ],
+  "route_segments": [
+    {
+      "segment_index": 0,
+      "start_step": 0,
+      "end_step": 99,
+      "count": 99,
+      "saving_pct": 37.01032239987814
+    },
+    {
+      "segment_index": 1,
+      "start_step": 99,
+      "end_step": 198,
+      "count": 99,
+      "saving_pct": -11.06020152297415
+    },
+    {
+      "segment_index": 2,
+      "start_step": 198,
+      "end_step": 297,
+      "count": 99,
+      "saving_pct": -2.80439703827175
+    },
+    {
+      "segment_index": 3,
+      "start_step": 297,
+      "end_step": 396,
+      "count": 99,
+      "saving_pct": 0.9691804295402933
+    },
+    {
+      "segment_index": 4,
+      "start_step": 396,
+      "end_step": 495,
+      "count": 99,
+      "saving_pct": 0.0971163948860108
+    },
+    {
+      "segment_index": 5,
+      "start_step": 495,
+      "end_step": 594,
+      "count": 99,
+      "saving_pct": 5.644154845238248
+    },
+    {
+      "segment_index": 6,
+      "start_step": 594,
+      "end_step": 693,
+      "count": 99,
+      "saving_pct": 29.732932542688932
+    },
+    {
+      "segment_index": 7,
+      "start_step": 693,
+      "end_step": 792,
+      "count": 99,
+      "saving_pct": 20.335078561229604
+    },
+    {
+      "segment_index": 8,
+      "start_step": 792,
+      "end_step": 891,
+      "count": 99,
+      "saving_pct": -12.152567372596584
+    },
+    {
+      "segment_index": 9,
+      "start_step": 891,
+      "end_step": 999,
+      "count": 108,
+      "saving_pct": -2.5118863323824234
+    }
+  ],
+  "operating_points": {
+    "agent_unique_points": 999,
+    "ref_unique_points": 999,
+    "rpm_range": [
+      6222.622099674099,
+      9838.684476969525
+    ],
+    "torque_range": [
+      -102.59545988392208,
+      200.92883632713685
+    ]
+  }
+}

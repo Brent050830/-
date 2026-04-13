@@ -145,6 +145,26 @@ def query_efficiency(eff_map: dict, torque: float, speed_rpm: float) -> float: #
     return float(np.clip(eta, 0.01, 0.99))
 
 
+def get_optimal_torque_delta(eff_map: Optional[dict], speed_rpm: float, current_torque: float) -> float:
+    if eff_map is None:
+        return 0.0
+    torques = eff_map["torques"]
+    speeds = eff_map["speeds"]
+    eff = eff_map["eff"]
+    
+    s = np.clip(speed_rpm, speeds[0], speeds[-1])
+    diffs = np.abs(speeds - s)
+    closest_si = np.argmin(diffs)
+    col_eff = np.nan_to_num(eff[:, closest_si], nan=0.0)
+    
+    mask = torques >= 0.0 if current_torque >= 0.0 else torques <= 0.0
+    valid_effs = np.where(mask, col_eff, -1.0)
+    best_idx = np.argmax(valid_effs)
+    optimal_torque = torques[best_idx]
+    
+    return float(optimal_torque - current_torque)
+
+
 def vehicle_speed_to_motor_speed_rpm(vehicle_speed_mps: float) -> float:
     wheel_omega_radps = vehicle_speed_mps / WHEEL_RADIUS
     motor_omega_radps = wheel_omega_radps * GEAR_RATIO
@@ -242,11 +262,13 @@ def step_longitudinal_dynamics(
     eff_map: Optional[dict],
     soc_prev: float,
     p_aux_w: float = P_AUX_DEFAULT_W,
+    drag_coeff_scale: float = 1.0,
+    roll_resist_scale: float = 1.0,
 ) -> dict:
     motor_speed_now_rpm = vehicle_speed_to_motor_speed_rpm(speed_prev)
-    f_roll = VEHICLE_MASS * GRAVITY * ROLL_RESIST * math.cos(grade)
+    f_roll = VEHICLE_MASS * GRAVITY * (ROLL_RESIST * roll_resist_scale) * math.cos(grade)
     f_grade = VEHICLE_MASS * GRAVITY * math.sin(grade)
-    f_air = 0.5 * AIR_DENSITY * DRAG_COEFF * FRONTAL_AREA * speed_prev ** 2
+    f_air = 0.5 * AIR_DENSITY * (DRAG_COEFF * drag_coeff_scale) * FRONTAL_AREA * speed_prev ** 2
 
     # 先用起点转速做一次粗限幅，预测区间均速，再用均速做最终恒功率限幅。
     motor_torque_pre = limit_motor_torque(motor_torque_cmd, motor_speed_now_rpm)
@@ -474,7 +496,7 @@ def generate_reference_trajectory( # 生成参考轨迹，基于路况信息和�
 
 
 class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空间、奖励计算等核心逻辑，支持不同驾驶风格和模式的训练
-    OBS_DIM = 28 # 状态观测维度，包含当前速度、SOC、扭矩、预测信息、驾驶风格等多维特征
+    OBS_DIM = 29 # 状态观测维度，维数+1，加入了“最优扭矩偏移（Optimal Torque Delta）”这个稳定的效率牵引特征
     ACT_DIM = 1 # 动作空间维度，表示电机扭矩的控制量
     CONSTRAINT_NAMES = ["speed", "distance", "smoothness", "projection", "window_energy"] # 约束名称列表，用于评估不同类型的约束违反程度
 
@@ -490,6 +512,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         preview_steps: int = 5,
         window_size: int = 10,
         projection_horizon: int = 5,
+        domain_randomization: Optional[dict] = None,
     ):
         self.road = road
         self.ref = ref
@@ -508,7 +531,6 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             float(np.mean(np.abs(self.ref.get("ref_cmp_energy_per_ds", np.zeros(self.n))))),
             ENERGY_NORM_EPS,
         )
-
         self.residual_torque_scale = residual_torque_scale
         self.speed_tol = self.sp["speed_tol_ms"]
         self.dist_tol = self.sp["dist_tol_m"]
@@ -516,6 +538,9 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         self.smooth_tol = 8.0
         self.window_energy_tol = 0.3
         self.torque_blend = TORQUE_BLEND_DEFAULT
+        self.domain_randomization = domain_randomization or {}
+        self.drag_coeff_scale = float(self.domain_randomization.get("drag_coeff_scale", 1.0))
+        self.roll_resist_scale = float(self.domain_randomization.get("roll_resist_scale", 1.0))
 
         self.k = 0
         self.v = 0.0
@@ -572,9 +597,10 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         ref_v = self.ref["ref_speed"][k]
         ref_torque = self.ref["ref_torque"][k]
         # 直接由智能体来调节动作，不施加第二次外部物理延迟
+        grade_k = self.road["grade"][k]
+        ref_accel = self.ref["ref_accel"][k] if "ref_accel" in self.ref else 0.0
         motor_torque_cmd = ref_torque + residual_torque
 
-        grade_k = self.road["grade"][k]
         dyn = step_longitudinal_dynamics(
             speed_prev=self.v,
             motor_torque_cmd=motor_torque_cmd,
@@ -583,6 +609,8 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             eff_map=self.eff_map,
             soc_prev=self.soc,
             p_aux_w=P_AUX_DEFAULT_W,
+            drag_coeff_scale=self.drag_coeff_scale,
+            roll_resist_scale=self.roll_resist_scale,
         )
         motor_torque = dyn["motor_torque"]
         f_roll = dyn["f_roll"]
@@ -622,7 +650,6 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         dist_err = abs(self.agent_dist - ref_dist_k)
         time_err_s = self.total_time_agent - ref_time_k
         torque_diff = abs(motor_torque - self.prev_torque)
-        ref_accel = self.ref["ref_accel"][k] if "ref_accel" in self.ref else 0.0
         accel_err = abs(accel - ref_accel)
 
         cost_speed = max(0.0, speed_err / self.speed_tol - 1.0)
@@ -686,6 +713,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             k=k,
             ref_torque=ref_torque,
             time_err_s=time_err_s,
+            action_diff=abs(action[0] - self.prev_action[0]),
         )
         self.prev_loss_delta = reward_info.get("loss_delta", 0.0)
         self.prev_torque = motor_torque
@@ -735,6 +763,8 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             "total_time_agent": self.total_time_agent,
             "agent_dist": self.agent_dist,
             "residual_torque": residual_torque,
+            "drag_coeff_scale": self.drag_coeff_scale,
+            "roll_resist_scale": self.roll_resist_scale,
             "hard_violation": hard_violation,
         }
         return self._build_obs(), float(reward), done, info
@@ -758,6 +788,7 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         k,
         ref_torque,
         time_err_s,
+        action_diff: float = 0.0,
     ) -> Tuple[float, dict]:
         track_penalty = ( # 跟踪误差的综合惩罚项，基于速度误差、距离误差和加速度误差的平方和，使用不同的权重进行组合，鼓励同时满足多个跟踪指标
             8.0 * (speed_err / self.speed_tol) ** 2
@@ -784,8 +815,11 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
         agent_loss_density = accounted_energy / max(self.ds, 1e-8)
         loss_delta = agent_loss_density - ref_loss_density
         torque_delta_penalty = w_u * (torque_diff / max(self.residual_torque_scale, 1e-8)) ** 2
+        
+        # 引入动作平滑度惩罚，防止踩放油门（hunting）
+        action_jerk_penalty = 2.0 * action_diff ** 2
 
-        r_energy = -w_c * loss_delta - torque_delta_penalty
+        r_energy = -w_c * loss_delta - torque_delta_penalty - action_jerk_penalty
 
         beta = 0.05
         g_track = math.exp(-beta * track_penalty)
@@ -864,7 +898,15 @@ class MotorEnv: # 电动汽车电机环境类，包含状态观测、动作空�
             preview.append(self.road["grade"][idx] * 10.0)
 
         style_oh = self.sp["one_hot"]
-        action_hints = [self.residual_torque_scale / MOTOR_MAX_TORQUE]
+        
+        agent_rpm_k = vehicle_speed_to_motor_speed_rpm(self.v)
+        opt_t_delta = get_optimal_torque_delta(self.eff_map, agent_rpm_k, self.prev_torque)
+        opt_t_delta_norm = opt_t_delta / MOTOR_MAX_TORQUE
+
+        action_hints = [
+            self.residual_torque_scale / MOTOR_MAX_TORQUE,
+            opt_t_delta_norm,
+        ]
         progress = k / max(n - 1, 1)
 
         obs = np.array(

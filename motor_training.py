@@ -189,6 +189,31 @@ def eval_episode(env: MotorEnv, agent: PPOAgent) -> Tuple[float, dict, List[dict
     return total_reward, metrics, step_infos
 
 
+def _sample_training_domain_randomization(
+    road: dict,
+    style: str,
+    eff_map: dict,
+    rng: np.random.RandomState,
+) -> Tuple[dict, dict, dict]:
+    speed_scale = float(np.clip(rng.uniform(0.95, 1.05), 0.90, 1.10))
+    drag_scale = float(np.clip(rng.uniform(0.92, 1.08), 0.85, 1.15))
+    roll_scale = float(np.clip(rng.uniform(0.92, 1.08), 0.85, 1.15))
+
+    road_rand = copy.deepcopy(road)
+    road_rand["speed_limit"] = np.clip(
+        np.asarray(road["speed_limit"], dtype=float) * speed_scale,
+        0.5,
+        40.0,
+    )
+    ref_rand = generate_reference_trajectory(road_rand, style=style, eff_map=eff_map)
+    domain_rand = {
+        "speed_limit_scale": speed_scale,
+        "drag_coeff_scale": drag_scale,
+        "roll_resist_scale": roll_scale,
+    }
+    return road_rand, ref_rand, domain_rand
+
+
 # ============================================================
 #  单阶段训练
 # ============================================================
@@ -203,6 +228,10 @@ def train_stage(agent: PPOAgent,
                 energy_weight_schedule: Optional[List[float]] = None,
                 residual_torque_scale: float = 6.0,
                 residual_torque_scale_schedule: Optional[List[float]] = None,
+                domain_randomization: bool = False,
+                train_road_gen: Optional[dict] = None,
+                resample_train_road_each_episode: bool = False,
+                resample_seed_base: int = 0,
                 lagrangian_mgr: Optional[LagrangianManager] = None,
                 eval_interval: int = 20,
                 eval_road: Optional[dict] = None,
@@ -245,6 +274,7 @@ def train_stage(agent: PPOAgent,
         "best_episode": -1,
     }
     eval_interval = max(1, min(eval_interval, num_episodes))
+    dr_rng = np.random.RandomState(20260404)
 
     for ep in range(num_episodes):
         # 能量权重 schedule
@@ -257,9 +287,25 @@ def train_stage(agent: PPOAgent,
             torque_scale = residual_torque_scale_schedule[ep]
 
         # 创建环境
-        env = MotorEnv(road=road, ref=ref, style=style, mode=mode,
+        episode_road = road
+        episode_ref = ref
+        episode_domain_rand = None
+        if resample_train_road_each_episode and train_road_gen is not None:
+            episode_seed = int(resample_seed_base + ep)
+            episode_road = generate_road(seed=episode_seed, **train_road_gen)
+            episode_ref = generate_reference_trajectory(episode_road, style=style, eff_map=eff_map)
+        if domain_randomization:
+            episode_road, episode_ref, episode_domain_rand = _sample_training_domain_randomization(
+                road=episode_road,
+                style=style,
+                eff_map=eff_map,
+                rng=dr_rng,
+            )
+
+        env = MotorEnv(road=episode_road, ref=episode_ref, style=style, mode=mode,
                        eff_map=eff_map, energy_weight=ew,
-                       residual_torque_scale=torque_scale)
+                       residual_torque_scale=torque_scale,
+                       domain_randomization=episode_domain_rand)
 
         # 收集 rollout
         ep_reward, ep_metrics, last_obs = rollout_episode(env, agent)
@@ -341,6 +387,9 @@ def run_multistage_training(agent: PPOAgent,
                             track_eval_interval: int = 20,
                             energy_eval_interval: int = 20,
                             polish_eval_interval: int = 10,
+                            train_road_gen: Optional[dict] = None,
+                            resample_train_road_each_episode: bool = False,
+                            resample_seed_base: int = 0,
                             checkpoint_dir: str = "checkpoints",
                             verbose: bool = True,
                             ) -> dict:
@@ -368,6 +417,10 @@ def run_multistage_training(agent: PPOAgent,
         style=style, mode="track", num_episodes=track_episodes,
         energy_weight=0.0,
         residual_torque_scale=max(residual_torque_final * 0.5, 1.0),
+        domain_randomization=False,
+        train_road_gen=train_road_gen,
+        resample_train_road_each_episode=resample_train_road_each_episode,
+        resample_seed_base=resample_seed_base + 1000,
         lagrangian_mgr=lagrangian_mgr,
         eval_interval=track_eval_interval, eval_road=eval_road, eval_ref=eval_ref,
         checkpoint_dir=checkpoint_dir, stage_name="track", verbose=verbose,
@@ -395,6 +448,10 @@ def run_multistage_training(agent: PPOAgent,
         energy_weight_schedule=energy_schedule,
         residual_torque_scale=residual_torque_final,
         residual_torque_scale_schedule=torque_schedule,
+        domain_randomization=False,
+        train_road_gen=train_road_gen,
+        resample_train_road_each_episode=resample_train_road_each_episode,
+        resample_seed_base=resample_seed_base + 2000,
         lagrangian_mgr=lagrangian_mgr,
         eval_interval=energy_eval_interval, eval_road=eval_road, eval_ref=eval_ref,
         checkpoint_dir=checkpoint_dir, stage_name="energy", verbose=verbose,
@@ -423,6 +480,10 @@ def run_multistage_training(agent: PPOAgent,
             residual_torque_final,
             polish_episodes,
         ).tolist(),
+        domain_randomization=False,
+        train_road_gen=train_road_gen,
+        resample_train_road_each_episode=resample_train_road_each_episode,
+        resample_seed_base=resample_seed_base + 3000,
         lagrangian_mgr=lagrangian_mgr,
         eval_interval=polish_eval_interval, eval_road=eval_road, eval_ref=eval_ref,
         checkpoint_dir=checkpoint_dir, stage_name="polish", verbose=verbose,

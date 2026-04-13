@@ -33,6 +33,12 @@ def build_road_sets(eff_map: dict,
     """
     构造训练 / 评估 / stress 三套道路和参考轨迹
     """
+    train_road_gen = {
+        "total_dist": train_dist,
+        "curve_prob": 0.18,
+        "urban_prob": 0.10,
+        "stop_prob": 0.05,
+    }
     train_road = generate_road(
         total_dist=train_dist,
         seed=seed_base + 100,
@@ -63,6 +69,7 @@ def build_road_sets(eff_map: dict,
     stress_ref = generate_reference_trajectory(stress_road, style=style, eff_map=eff_map)
 
     return {
+        "train_road_gen": train_road_gen,
         "train_road":  train_road,  "train_ref":  train_ref,
         "eval_road":   eval_road,   "eval_ref":   eval_ref,
         "stress_road": stress_road, "stress_ref": stress_ref,
@@ -187,6 +194,7 @@ def run_single_seed(style: str,
                     eff_map: dict,
                     output_dir: str = "results",
                     preset: str = "fast",
+                    resample_train_road_each_episode: bool = False,
                     verbose: bool = True) -> dict:
     """
     运行单个 seed 的完整多阶段训练 + 评估
@@ -252,6 +260,9 @@ def run_single_seed(style: str,
         track_eval_interval=cfg["eval_interval"]["track"],
         energy_eval_interval=cfg["eval_interval"]["energy"],
         polish_eval_interval=cfg["eval_interval"]["polish"],
+        train_road_gen=road_sets.get("train_road_gen"),
+        resample_train_road_each_episode=resample_train_road_each_episode,
+        resample_seed_base=seed * 10000,
         checkpoint_dir=ckpt_dir,
         verbose=verbose,
     )

@@ -168,8 +168,17 @@ def plot_tracking_and_energy(infos: List[dict], metrics: dict, ref: dict,
     cum_agent = np.cumsum(agent_energy)
     cum_ref_reward = np.cumsum(ref_reward)
     cum_agent_reward = np.cumsum(reward_basis)
-    true_saving_pct = (cum_ref - cum_agent) / (np.abs(cum_ref) + 1e-8) * 100
-    reward_saving_pct = (cum_ref_reward - cum_agent_reward) / (np.abs(cum_ref_reward) + 1e-8) * 100
+    # 使用全程累积均值的1%作为分母的安全下限，避免起步阶段分母接近0导致数值爆炸
+    denom_floor_real = max(np.abs(cum_ref[-1]) * 0.01, 1e-3) if len(cum_ref) > 0 else 1e-3
+    denom_floor_reward = max(np.abs(cum_ref_reward[-1]) * 0.01, 1e-3) if len(cum_ref_reward) > 0 else 1e-3
+    true_saving_pct = np.clip(
+        (cum_ref - cum_agent) / np.maximum(np.abs(cum_ref), denom_floor_real) * 100,
+        -200, 200,
+    )
+    reward_saving_pct = np.clip(
+        (cum_ref_reward - cum_agent_reward) / np.maximum(np.abs(cum_ref_reward), denom_floor_reward) * 100,
+        -200, 200,
+    )
     ax.plot(x_axis[:len(true_saving_pct)], true_saving_pct, color='forestgreen', linewidth=1.8, label='真实累计节能率')
     ax.plot(x_axis[:len(reward_saving_pct)], reward_saving_pct, color='navy', linewidth=1.6,
             linestyle='--', label='训练口径累计节能率')
