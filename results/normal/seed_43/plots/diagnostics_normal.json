@@ -2,15 +2,15 @@
   "traction_regen": [
     {
       "segment": "traction",
-      "count": 666,
-      "saving_total_pct": 7.7562752047336705,
-      "saving_reward_pct": 24.422275890730543
+      "count": 673,
+      "saving_total_pct": 1.88882418043297,
+      "saving_reward_pct": 3.8051198163800106
     },
     {
       "segment": "regen",
-      "count": 333,
-      "saving_total_pct": 3.6266377766405795,
-      "saving_reward_pct": -4.576728485905126
+      "count": 326,
+      "saving_total_pct": 0.7296825499009947,
+      "saving_reward_pct": -1.0995542491043164
     }
   ],
   "speed_bins": [
@@ -22,17 +22,17 @@
     {
       "label": "10-20",
       "count": 122,
-      "saving_pct": 24.56538049005453
+      "saving_pct": 6.260678851235975
     },
     {
       "label": "20-30",
       "count": 521,
-      "saving_pct": 10.939293906105965
+      "saving_pct": 2.760716093733338
     },
     {
       "label": "30-40",
       "count": 356,
-      "saving_pct": 16.843832249695044
+      "saving_pct": 3.7654440270911333
     },
     {
       "label": "40+",
@@ -44,27 +44,27 @@
     {
       "label": "0-25",
       "count": 74,
-      "saving_pct": 8770.366640389731
+      "saving_pct": 3085.2121120699517
     },
     {
       "label": "25-50",
       "count": 238,
-      "saving_pct": 27.634178395569386
+      "saving_pct": 8.370096283445092
     },
     {
       "label": "50-100",
       "count": 236,
-      "saving_pct": 11.426579464853482
+      "saving_pct": 3.4467261986000906
     },
     {
       "label": "100-150",
       "count": 420,
-      "saving_pct": 6.18143748905665
+      "saving_pct": 1.203418979570837
     },
     {
       "label": "150-220",
       "count": 31,
-      "saving_pct": 12.059420815609686
+      "saving_pct": 0.795907361209579
     },
     {
       "label": "220+",
@@ -78,82 +78,82 @@
       "start_step": 0,
       "end_step": 99,
       "count": 99,
-      "saving_pct": 5.145398798405501
+      "saving_pct": 1.7414773120113531
     },
     {
       "segment_index": 1,
       "start_step": 99,
       "end_step": 198,
       "count": 99,
-      "saving_pct": 2.6956850390835116
+      "saving_pct": 1.1018203536247686
     },
     {
       "segment_index": 2,
       "start_step": 198,
       "end_step": 297,
       "count": 99,
-      "saving_pct": 2.6547848728671712
+      "saving_pct": 0.33400476565192694
     },
     {
       "segment_index": 3,
       "start_step": 297,
       "end_step": 396,
       "count": 99,
-      "saving_pct": 4.535304373172706
+      "saving_pct": 1.400259072712654
     },
     {
       "segment_index": 4,
       "start_step": 396,
       "end_step": 495,
       "count": 99,
-      "saving_pct": 4.128761186697292
+      "saving_pct": 0.32011081220534915
     },
     {
       "segment_index": 5,
       "start_step": 495,
       "end_step": 594,
       "count": 99,
-      "saving_pct": 10.322342717840662
+      "saving_pct": 2.8574950237693995
     },
     {
       "segment_index": 6,
       "start_step": 594,
       "end_step": 693,
       "count": 99,
-      "saving_pct": 4.828973006987666
+      "saving_pct": 1.1332458695448184
     },
     {
       "segment_index": 7,
       "start_step": 693,
       "end_step": 792,
       "count": 99,
-      "saving_pct": 10.354216984125276
+      "saving_pct": 1.0409726895914253
     },
     {
       "segment_index": 8,
       "start_step": 792,
       "end_step": 891,
       "count": 99,
-      "saving_pct": 19.51089731035031
+      "saving_pct": 5.964635693998783
     },
     {
       "segment_index": 9,
       "start_step": 891,
       "end_step": 999,
       "count": 108,
-      "saving_pct": 25.90477759071767
+      "saving_pct": 7.349136846461837
     }
   ],
   "operating_points": {
     "agent_unique_points": 999,
     "ref_unique_points": 999,
     "rpm_range": [
-      4521.845353544243,
+      4831.928576008621,
       8942.833101382583
     ],
     "torque_range": [
       -127.58118112694258,
-      152.79431947422992
+      157.4809393296455
     ]
   }
 }

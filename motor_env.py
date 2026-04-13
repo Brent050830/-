@@ -72,7 +72,7 @@ STYLE_PROFILES = {
         "accel_tol_ms2": 0.25, # 加速度容差 (m/s^2)
         "terminal_time_weight": 4.0,
         "hard_violation_scale": 2.0,
-        "terminal_track_fail_weight": 20.0,
+        "terminal_track_fail_weight": 65.0, # 增加脱轨惩罚，防止弃赛
         "one_hot": [1, 0, 0], # 驾驶风格的独热编码表示
     },
     "normal": {
@@ -86,7 +86,7 @@ STYLE_PROFILES = {
         "accel_tol_ms2": 0.35, # 加速度容差 (m/s^2)
         "terminal_time_weight": 5.0,
         "hard_violation_scale": 2.0,
-        "terminal_track_fail_weight": 20.0,
+        "terminal_track_fail_weight": 65.0, # 增加脱轨惩罚，防止弃赛
         "one_hot": [0, 1, 0], # 驾驶风格的独热编码表示
     },
     "sport": {
